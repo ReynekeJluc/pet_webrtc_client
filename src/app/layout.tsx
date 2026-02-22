@@ -1,17 +1,7 @@
-import { SocketProvider } from '@/context/SocketContext';
-import type { Metadata } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
 
-const geistSans = Geist({
-	variable: '--font-geist-sans',
-	subsets: ['latin'],
-});
-
-const geistMono = Geist_Mono({
-	variable: '--font-geist-mono',
-	subsets: ['latin'],
-});
+import type { Metadata } from 'next';
+import { Providers } from './providers';
 
 export const metadata: Metadata = {
 	title: 'Client WebRTC',
@@ -25,13 +15,9 @@ export default function RootLayout({
 }>) {
 	return (
 		<html lang='en'>
-			<SocketProvider>
-				<body
-					className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-				>
-					{children}
-				</body>
-			</SocketProvider>
+			<Providers>
+				<body className={'antialiased'}>{children}</body>
+			</Providers>
 		</html>
 	);
 }
