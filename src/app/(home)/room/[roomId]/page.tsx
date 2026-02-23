@@ -1,11 +1,15 @@
 'use client';
 
 import { useSocket } from '@/context/SocketContext';
-import { useParams, useRouter } from 'next/navigation';
+import { notFound, useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-export default function Room() {
+export default function RoomPage() {
 	const params = useParams();
+	if (!params.roomId) {
+		notFound();
+	}
+
 	const [showToast, setShowToast] = useState(false);
 
 	const socket = useSocket();
@@ -41,6 +45,14 @@ export default function Room() {
 		}
 	};
 
+	const copyRoomAddress = () => {
+		if (params.roomId && typeof params.roomId === 'string') {
+			navigator.clipboard.writeText(params.roomId).catch(e => {
+				console.log(e);
+			});
+		}
+	};
+
 	return (
 		<div className='h-screen bg-gray-900 flex flex-col'>
 			{/* Toast уведомление */}
@@ -70,7 +82,10 @@ export default function Room() {
 				<div className='flex items-center justify-between'>
 					<div>
 						<h1 className='text-xl font-semibold text-white'>Комната</h1>
-						<p className='text-sm text-gray-400 font-mono'>
+						<p
+							className='text-sm text-gray-400 font-mono cursor-pointer'
+							onClick={copyRoomAddress}
+						>
 							{params.roomId as string}
 						</p>
 					</div>
