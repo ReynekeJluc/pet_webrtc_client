@@ -1,11 +1,30 @@
 'use client';
 
-import { useParams } from 'next/navigation';
+import { useSocket } from '@/context/SocketContext';
+import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 export default function Room() {
 	const params = useParams();
 	const [showToast, setShowToast] = useState(false);
+
+	const socket = useSocket();
+	const router = useRouter();
+
+	const leaveRoom = () => {
+		socket?.emit(
+			'leave-room',
+			(response: { success: boolean; error?: string }) => {
+				console.error('Клик');
+				if (response.success) {
+					console.error('Пытаюсь выйти');
+					router.push('/');
+				} else {
+					console.error('Failed to leave room:', response.error);
+				}
+			},
+		);
+	};
 
 	const copyRoomLink = () => {
 		const link = `${window.location.origin}/room/${params.roomId}`;
@@ -225,7 +244,10 @@ export default function Room() {
 					<div className='w-px h-10 bg-gray-700 mx-2'></div>
 
 					{/* Leave */}
-					<button className='bg-red-600 hover:bg-red-700 p-4 rounded-full transition-colors'>
+					<button
+						className='bg-red-600 hover:bg-red-700 p-4 rounded-full transition-colors'
+						onClick={leaveRoom}
+					>
 						<svg
 							className='w-6 h-6 text-white'
 							fill='none'
