@@ -17,6 +17,7 @@ export default function RoomPage() {
 
 	const [showToast, setShowToast] = useState(false);
 	const [localVideo, setlocalVideo] = useState<MediaStream | null>(null);
+	const [peers, setPeers] = useState(new Map());
 
 	const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -28,10 +29,34 @@ export default function RoomPage() {
 
 		const handlePeerJoined = (data: { socketId: string }) => {
 			console.log('Новый участник:', data.socketId);
+
+			const pc = new RTCPeerConnection({
+				iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+			});
+
+			setPeers(prevPeers => {
+				const newPeer = new Map(prevPeers);
+				newPeer.set(data.socketId, { connection: pc });
+				return newPeer;
+			});
 		};
 
 		const handleExistingParticipants = (participantIds: string[]) => {
 			console.log('Уже в комнате:', participantIds);
+
+			setPeers(prevPeers => {
+				const newPeers = new Map(prevPeers);
+
+				participantIds.forEach(socketId => {
+					const pc = new RTCPeerConnection({
+						iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+					});
+
+					newPeers.set(socketId, { connection: pc });
+				});
+
+				return newPeers;
+			});
 		};
 
 		socket.on('peer-joined', handlePeerJoined);
@@ -64,6 +89,10 @@ export default function RoomPage() {
 			socket.off('existing-participants', handleExistingParticipants);
 		};
 	}, [socket, roomId, router]);
+
+	useEffect(() => {
+		console.log('Peers обновились:', peers);
+	}, [peers]);
 
 	const leaveRoom = () => {
 		if (localVideo) {
