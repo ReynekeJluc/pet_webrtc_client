@@ -34,9 +34,12 @@ export default function RoomPage() {
 				iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 			});
 
+			if (localVideo) {
+			}
+
 			setPeers(prevPeers => {
 				const newPeer = new Map(prevPeers);
-				newPeer.set(data.socketId, { connection: pc });
+				newPeer.set(data.socketId, { connection: pc, stream: null });
 				return newPeer;
 			});
 		};
@@ -52,7 +55,13 @@ export default function RoomPage() {
 						iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 					});
 
-					newPeers.set(socketId, { connection: pc });
+					if (localVideo) {
+						localVideo.getTracks().forEach(track => {
+							pc.addTrack(track, localVideo);
+						});
+					}
+
+					newPeers.set(socketId, { connection: pc, stream: null });
 				});
 
 				return newPeers;
@@ -88,7 +97,7 @@ export default function RoomPage() {
 			socket.off('peer-joined', handlePeerJoined);
 			socket.off('existing-participants', handleExistingParticipants);
 		};
-	}, [socket, roomId, router]);
+	}, [socket, roomId, router, localVideo]);
 
 	useEffect(() => {
 		console.log('Peers обновились:', peers);
