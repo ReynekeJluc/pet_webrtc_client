@@ -61,6 +61,19 @@ export default function RoomPage() {
 						});
 					}
 
+					pc.createOffer()
+						.then(offer => {
+							pc.setLocalDescription(offer);
+
+							socket.emit('relay-sdp', {
+								socketId: socketId,
+								sdp: offer,
+							});
+						})
+						.catch(e => {
+							console.error('Ошибка отправки SDP', e);
+						});
+
 					newPeers.set(socketId, { connection: pc, stream: null });
 				});
 
