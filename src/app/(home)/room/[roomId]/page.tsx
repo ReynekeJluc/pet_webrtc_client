@@ -2,7 +2,7 @@
 
 import { useSocket } from '@/context/SocketContext';
 import { notFound, useParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export default function RoomPage() {
 	const params = useParams();
@@ -11,17 +11,44 @@ export default function RoomPage() {
 	}
 
 	const [showToast, setShowToast] = useState(false);
+	const [localVideo, setlocalVideo] = useState<MediaStream | null>(null);
+
+	const videoRef = useRef<HTMLVideoElement>(null);
 
 	const socket = useSocket();
 	const router = useRouter();
+
+	useEffect(() => {
+		let stream: MediaStream | null = null;
+
+		navigator.mediaDevices
+			.getUserMedia({ video: true, audio: true })
+			.then(mediaStream => {
+				console.log('success connect video and audio');
+				stream = mediaStream;
+				setlocalVideo(mediaStream);
+
+				if (videoRef.current) {
+					videoRef.current.srcObject = mediaStream;
+				}
+			})
+			.catch(e => {
+				console.error('Failed to get media:', e);
+				alert('Не удалось получить доступ к камере/микрофону');
+			});
+
+		return () => {
+			if (stream) {
+				stream.getTracks().forEach(track => track.stop());
+			}
+		};
+	}, []);
 
 	const leaveRoom = () => {
 		socket?.emit(
 			'leave-room',
 			(response: { success: boolean; error?: string }) => {
-				console.error('Клик');
 				if (response.success) {
-					console.error('Пытаюсь выйти');
 					router.push('/');
 				} else {
 					console.error('Failed to leave room:', response.error);
@@ -121,7 +148,12 @@ export default function RoomPage() {
 				<div className='grid grid-cols-2 gap-4 h-full'>
 					{/* Local Video */}
 					<div className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'>
-						<video className='w-full h-full object-cover' autoPlay muted />
+						<video
+							ref={videoRef}
+							className='w-full h-full object-cover'
+							autoPlay
+							muted
+						/>
 						<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
 							<span className='text-white text-sm font-medium'>Вы</span>
 						</div>
