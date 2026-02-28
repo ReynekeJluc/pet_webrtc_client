@@ -25,7 +25,7 @@ export default function Home() {
 
 	const joinRoom = (roomId: string) => {
 		if (!roomId.trim()) {
-			alert('Введите Id комнаты');
+			alert('Введите Id комнаты'); //! Сделай всплывашку вместо этого колхоза
 			return;
 		}
 
@@ -33,7 +33,7 @@ export default function Home() {
 			if (res.success) {
 				router.push(`/room/${roomId}`);
 			} else {
-				alert('Комната не найдена');
+				alert('Комната не найдена'); //! Сделай всплывашку вместо этого колхоза
 			}
 		});
 	};

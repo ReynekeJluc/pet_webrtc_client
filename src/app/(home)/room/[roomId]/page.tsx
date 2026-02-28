@@ -6,9 +6,14 @@ import { useEffect, useRef, useState } from 'react';
 
 export default function RoomPage() {
 	const params = useParams();
+	const roomId = Array.isArray(params.roomId)
+		? params.roomId[0]
+		: params.roomId;
 	if (!params.roomId) {
 		notFound();
 	}
+
+	const [isJoined, setIsJoined] = useState(false);
 
 	const [showToast, setShowToast] = useState(false);
 	const [localVideo, setlocalVideo] = useState<MediaStream | null>(null);
@@ -19,6 +24,68 @@ export default function RoomPage() {
 	const router = useRouter();
 
 	useEffect(() => {
+		if (!socket) return;
+
+		const handlePeerJoined = (data: { socketId: string }) => {
+			console.log('Новый участник:', data.socketId);
+		};
+
+		const handleExistingParticipants = (participantIds: string[]) => {
+			console.log('Уже в комнате:', participantIds);
+		};
+
+		socket.on('peer-joined', handlePeerJoined);
+		socket.on('existing-participants', handleExistingParticipants);
+
+		socket?.emit('check-room', { roomId }, (res: { success: boolean }) => {
+			if (res.success) {
+				socket?.emit(
+					'join-room',
+					{ roomId: roomId },
+					(response: { success: boolean; error?: string }) => {
+						if (!response.success) {
+							alert('Не удалось войти в комнату'); //! Сделай всплывашку вместо этого колхоза
+							console.error(response.error);
+							router.push('/');
+						} else {
+							setIsJoined(true);
+						}
+					},
+				);
+			} else {
+				alert('Комната не найдена'); //! Сделай всплывашку вместо этого колхоза
+				router.push('/');
+				return;
+			}
+		});
+
+		return () => {
+			socket.off('peer-joined', handlePeerJoined);
+			socket.off('existing-participants', handleExistingParticipants);
+		};
+	}, [socket, roomId, router]);
+
+	const leaveRoom = () => {
+		if (localVideo) {
+			localVideo.getTracks().forEach(track => track.stop());
+			setlocalVideo(null);
+		}
+
+		socket?.emit(
+			'leave-room',
+			(response: { success: boolean; error?: string }) => {
+				if (response.success) {
+					router.push('/');
+				} else {
+					console.error('Failed to leave room:', response.error);
+				}
+			},
+		);
+	};
+
+	useEffect(() => {
+		if (!isJoined) return;
+
 		let stream: MediaStream | null = null;
 
 		navigator.mediaDevices
@@ -34,7 +101,7 @@ export default function RoomPage() {
 			})
 			.catch(e => {
 				console.error('Failed to get media:', e);
-				alert('Не удалось получить доступ к камере/микрофону');
+				alert('Не удалось получить доступ к камере/микрофону'); //! Сделай всплывашку вместо этого колхоза
 			});
 
 		return () => {
@@ -42,57 +109,7 @@ export default function RoomPage() {
 				stream.getTracks().forEach(track => track.stop());
 			}
 		};
-	}, []);
-
-	// ! ПРОВЕРИТЬ ПОЧЕМУ ДВОЙНАЯ ПОДПИСКА СРАБАТЫВАЕТ
-	const hasJoined = useRef(false);
-	useEffect(() => {
-		if (!socket || !params.roomId || hasJoined.current) return;
-		// if (!socket) return;
-		hasJoined.current = true;
-
-		const handlePeerJoined = (data: { socketId: string }) => {
-			console.log('Новый участник:', data.socketId);
-		};
-
-		const handleExistingParticipants = (participantIds: string[]) => {
-			console.log('Уже в комнате:', participantIds);
-		};
-
-		socket.on('peer-joined', handlePeerJoined);
-		socket.on('existing-participants', handleExistingParticipants);
-
-		socket?.emit(
-			'join-room',
-			{ roomId: params.roomId },
-			(response: { success: boolean; error?: string }) => {
-				if (!response.success) {
-					alert('Не удалось войти в комнату');
-					hasJoined.current = false;
-					console.error(response.error);
-					router.push('/');
-				}
-			},
-		);
-
-		return () => {
-			socket.off('peer-joined', handlePeerJoined);
-			socket.off('existing-participants', handleExistingParticipants);
-		};
-	}, [socket, params.roomId, router]);
-
-	const leaveRoom = () => {
-		socket?.emit(
-			'leave-room',
-			(response: { success: boolean; error?: string }) => {
-				if (response.success) {
-					router.push('/');
-				} else {
-					console.error('Failed to leave room:', response.error);
-				}
-			},
-		);
-	};
+	}, [isJoined]);
 
 	const copyRoomLink = () => {
 		const link = `${window.location.origin}/room/${params.roomId}`;
