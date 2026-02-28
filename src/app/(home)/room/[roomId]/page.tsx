@@ -66,7 +66,7 @@ export default function RoomPage() {
 							pc.setLocalDescription(offer);
 
 							socket.emit('relay-sdp', {
-								socketId: socketId,
+								targetSocketId: socketId,
 								sdp: offer,
 							});
 						})
