@@ -15,7 +15,7 @@ export default function Home() {
 			'create-room',
 			(response: { success: boolean; roomId?: string; error?: string }) => {
 				if (response.success) {
-					router.push(`room/${response.roomId}`);
+					router.push(`/room/${response.roomId}`);
 				} else {
 					console.error('Failed to create room:', response.error);
 				}
@@ -25,10 +25,17 @@ export default function Home() {
 
 	const joinRoom = (roomId: string) => {
 		if (!roomId.trim()) {
-			alert('Введите Room ID');
+			alert('Введите Id комнаты');
 			return;
 		}
-		router.push(`room/${roomId}`);
+
+		socket?.emit('check-room', { roomId }, (res: { success: boolean }) => {
+			if (res.success) {
+				router.push(`/room/${roomId}`);
+			} else {
+				alert('Комната не найдена');
+			}
+		});
 	};
 
 	return (

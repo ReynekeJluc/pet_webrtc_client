@@ -44,6 +44,43 @@ export default function RoomPage() {
 		};
 	}, []);
 
+	// ! ПРОВЕРИТЬ ПОЧЕМУ ДВОЙНАЯ ПОДПИСКА СРАБАТЫВАЕТ
+	const hasJoined = useRef(false);
+	useEffect(() => {
+		if (!socket || !params.roomId || hasJoined.current) return;
+		// if (!socket) return;
+		hasJoined.current = true;
+
+		const handlePeerJoined = (data: { socketId: string }) => {
+			console.log('Новый участник:', data.socketId);
+		};
+
+		const handleExistingParticipants = (participantIds: string[]) => {
+			console.log('Уже в комнате:', participantIds);
+		};
+
+		socket.on('peer-joined', handlePeerJoined);
+		socket.on('existing-participants', handleExistingParticipants);
+
+		socket?.emit(
+			'join-room',
+			{ roomId: params.roomId },
+			(response: { success: boolean; error?: string }) => {
+				if (!response.success) {
+					alert('Не удалось войти в комнату');
+					hasJoined.current = false;
+					console.error(response.error);
+					router.push('/');
+				}
+			},
+		);
+
+		return () => {
+			socket.off('peer-joined', handlePeerJoined);
+			socket.off('existing-participants', handleExistingParticipants);
+		};
+	}, [socket, params.roomId, router]);
+
 	const leaveRoom = () => {
 		socket?.emit(
 			'leave-room',
