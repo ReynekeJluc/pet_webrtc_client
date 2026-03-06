@@ -16,7 +16,7 @@ export default function RoomPage() {
 	const [isJoined, setIsJoined] = useState(false);
 
 	const [showToast, setShowToast] = useState(false);
-	const [localVideo, setlocalVideo] = useState<MediaStream | null>(null);
+	const [localVideo, setLocalVideo] = useState<MediaStream | null>(null);
 	const [peers, setPeers] = useState(new Map());
 
 	const videoRef = useRef<HTMLVideoElement>(null);
@@ -34,8 +34,45 @@ export default function RoomPage() {
 				iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 			});
 
+			pc.onicecandidate = event => {
+				if (event.candidate !== null) {
+					socket.emit('relay-ice', {
+						targetSocketId: data.socketId,
+						candidate: event.candidate,
+					});
+				}
+			};
+
+			pc.ontrack = event => {
+				setPeers(prevPeers => {
+					const peer = prevPeers.get(data.socketId);
+					if (peer) {
+						peer.stream = event.streams[0];
+					}
+					return new Map(prevPeers);
+				});
+			};
+
 			if (localVideo) {
+				localVideo.getTracks().forEach(track => {
+					pc.addTrack(track, localVideo);
+				});
 			}
+
+			pc.createOffer()
+				.then((offer: RTCSessionDescriptionInit) => {
+					pc.setLocalDescription(offer);
+
+					socket.emit('relay-sdp', {
+						targetSocketId: data.socketId,
+						sdp: offer,
+					});
+
+					console.log('Создан offer для:', data.socketId);
+				})
+				.catch(e => {
+					console.error('Ошибка отправки SDP', e);
+				});
 
 			setPeers(prevPeers => {
 				const newPeer = new Map(prevPeers);
@@ -44,16 +81,36 @@ export default function RoomPage() {
 			});
 		};
 
-		const handleExistingParticipants = (participantIds: string[]) => {
-			console.log('Уже в комнате:', participantIds);
+		const handleExistingParticipants = (data: { participantIds: string[] }) => {
+			if (!socket) return;
+			console.log('Уже в комнате:', data.participantIds);
 
 			setPeers(prevPeers => {
 				const newPeers = new Map(prevPeers);
 
-				participantIds.forEach(socketId => {
+				data.participantIds.forEach(socketId => {
 					const pc = new RTCPeerConnection({
 						iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 					});
+
+					pc.onicecandidate = event => {
+						if (event.candidate !== null) {
+							socket.emit('relay-ice', {
+								targetSocketId: socketId,
+								candidate: event.candidate,
+							});
+						}
+					};
+
+					pc.ontrack = event => {
+						setPeers(prevPeers => {
+							const peer = prevPeers.get(socketId);
+							if (peer) {
+								peer.stream = event.streams[0];
+							}
+							return new Map(prevPeers);
+						});
+					};
 
 					if (localVideo) {
 						localVideo.getTracks().forEach(track => {
@@ -62,13 +119,15 @@ export default function RoomPage() {
 					}
 
 					pc.createOffer()
-						.then(offer => {
+						.then((offer: RTCSessionDescriptionInit) => {
 							pc.setLocalDescription(offer);
 
 							socket.emit('relay-sdp', {
 								targetSocketId: socketId,
 								sdp: offer,
 							});
+
+							console.log('Создан offer для:', socketId);
 						})
 						.catch(e => {
 							console.error('Ошибка отправки SDP', e);
@@ -116,10 +175,87 @@ export default function RoomPage() {
 		console.log('Peers обновились:', peers);
 	}, [peers]);
 
+	useEffect(() => {
+		if (!socket) return;
+
+		const handleSdpReceived = (data: {
+			fromSocketId: string;
+			sdp: {
+				type: string;
+				sdp: string;
+			};
+		}) => {
+			console.log('Получен SDP от:', data.fromSocketId);
+
+			setPeers(prevPeers => {
+				const newPeers = new Map(prevPeers);
+				const peer = newPeers.get(data.fromSocketId);
+
+				if (peer) {
+					peer.connection
+						.setRemoteDescription(data.sdp)
+						.then(() => {
+							if (data.sdp.type === 'offer') {
+								return peer.connection.createAnswer();
+							}
+						})
+						.then((answer?: RTCSessionDescriptionInit) => {
+							if (answer) {
+								peer.connection.setLocalDescription(answer);
+
+								socket.emit('relay-sdp', {
+									targetSocketId: data.fromSocketId,
+									sdp: answer,
+								});
+							}
+						})
+						.catch((e: Error) => {
+							console.error('Ошибка обработки SDP:', e);
+						});
+				}
+				return newPeers;
+			});
+		};
+
+		socket.on('sdp-received', handleSdpReceived);
+
+		return () => {
+			socket.off('sdp-received', handleSdpReceived);
+		};
+	}, [socket]);
+
+	useEffect(() => {
+		if (!socket) return;
+
+		const handleIceReceived = (data: {
+			fromSocketId: string;
+			candidate: RTCIceCandidateInit;
+		}) => {
+			console.log('Получен ICE от:', data.fromSocketId);
+
+			setPeers(prevPeers => {
+				const peer = prevPeers.get(data.fromSocketId);
+				if (peer) {
+					peer.connection.addIceCandidate(data.candidate).catch((e: Error) => {
+						console.error('Ошибка ICE: ', e);
+					});
+				}
+
+				return prevPeers;
+			});
+		};
+
+		socket.on('ice-received', handleIceReceived);
+
+		return () => {
+			socket.off('ice-received', handleIceReceived);
+		};
+	}, [socket]);
+
 	const leaveRoom = () => {
 		if (localVideo) {
 			localVideo.getTracks().forEach(track => track.stop());
-			setlocalVideo(null);
+			setLocalVideo(null);
 		}
 
 		socket?.emit(
@@ -144,7 +280,7 @@ export default function RoomPage() {
 			.then(mediaStream => {
 				console.log('success connect video and audio');
 				stream = mediaStream;
-				setlocalVideo(mediaStream);
+				setLocalVideo(mediaStream);
 
 				if (videoRef.current) {
 					videoRef.current.srcObject = mediaStream;
