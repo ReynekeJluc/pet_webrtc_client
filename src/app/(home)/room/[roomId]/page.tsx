@@ -23,6 +23,10 @@ export default function RoomPage() {
 
 	const [isJoined, setIsJoined] = useState(false);
 
+	const [isMicrophone, setIsMicrophone] = useState(true);
+	const [isCamera, setIsCamera] = useState(false);
+	const [isShareDisplay, setIsShareDisplay] = useState(false);
+
 	const [showToast, setShowToast] = useState(false);
 	const [localVideo, setLocalVideo] = useState<MediaStream | null>(null);
 	const [peers, setPeers] = useState(new Map());
@@ -454,23 +458,43 @@ export default function RoomPage() {
 						<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
 							<span className='text-white text-sm font-medium'>{nickname}</span>
 						</div>
-						<div className='absolute top-3 right-3 flex gap-2'>
-							<div className='bg-red-500 p-2 rounded-full'>
-								<svg
-									className='w-4 h-4 text-white'
-									fill='none'
-									stroke='currentColor'
-									viewBox='0 0 24 24'
-								>
-									<path
-										strokeLinecap='round'
-										strokeLinejoin='round'
-										strokeWidth={2}
-										d='M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z'
-									/>
-								</svg>
+						{isMicrophone ? (
+							<div className='absolute top-3 right-3 flex gap-2'>
+								<div className='bg-green-500 p-2 rounded-full'>
+									<svg
+										className='w-4 h-4 text-white'
+										fill='none'
+										stroke='currentColor'
+										viewBox='0 0 24 24'
+									>
+										<path
+											strokeLinecap='round'
+											strokeLinejoin='round'
+											strokeWidth={2}
+											d='M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z'
+										/>
+									</svg>
+								</div>
 							</div>
-						</div>
+						) : (
+							<div className='absolute top-3 right-3 flex gap-2'>
+								<div className='bg-red-500 p-2 rounded-full'>
+									<svg
+										className='w-4 h-4 text-white'
+										fill='none'
+										stroke='currentColor'
+										viewBox='0 0 24 24'
+									>
+										<path
+											strokeLinecap='round'
+											strokeLinejoin='round'
+											strokeWidth={2}
+											d='M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z'
+										/>
+									</svg>
+								</div>
+							</div>
+						)}
 					</div>
 
 					{Array.from(peers).map(([socketId, peer]) => (
@@ -525,7 +549,10 @@ export default function RoomPage() {
 			<div className='bg-gray-800 border-t border-gray-700 px-6 py-4'>
 				<div className='flex items-center justify-center gap-4'>
 					{/* Microphone */}
-					<button className='bg-gray-700 hover:bg-gray-600 p-4 rounded-full transition-colors'>
+					<button
+						onClick={() => setIsMicrophone(!isMicrophone)}
+						className={`${isMicrophone ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-600 hover:bg-red-700'} p-4 rounded-full transition-colors`}
+					>
 						<svg
 							className='w-6 h-6 text-white'
 							fill='none'
@@ -538,11 +565,22 @@ export default function RoomPage() {
 								strokeWidth={2}
 								d='M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z'
 							/>
+							{!isMicrophone && (
+								<path
+									strokeLinecap='round'
+									strokeLinejoin='round'
+									strokeWidth={2}
+									d='M6 6l12 12'
+								/>
+							)}
 						</svg>
 					</button>
 
 					{/* Camera */}
-					<button className='bg-gray-700 hover:bg-gray-600 p-4 rounded-full transition-colors'>
+					<button
+						onClick={() => setIsCamera(!isCamera)}
+						className={`${isCamera ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-600 hover:bg-red-700'} p-4 rounded-full transition-colors`}
+					>
 						<svg
 							className='w-6 h-6 text-white'
 							fill='none'
@@ -555,11 +593,22 @@ export default function RoomPage() {
 								strokeWidth={2}
 								d='M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z'
 							/>
+							{!isCamera && (
+								<path
+									strokeLinecap='round'
+									strokeLinejoin='round'
+									strokeWidth={2}
+									d='M6 6l12 12'
+								/>
+							)}
 						</svg>
 					</button>
 
 					{/* Screen Share */}
-					<button className='bg-gray-700 hover:bg-gray-600 p-4 rounded-full transition-colors'>
+					<button
+						onClick={() => setIsShareDisplay(!isShareDisplay)}
+						className={`${isShareDisplay ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'} p-4 rounded-full transition-colors`}
+					>
 						<svg
 							className='w-6 h-6 text-white'
 							fill='none'
@@ -572,11 +621,19 @@ export default function RoomPage() {
 								strokeWidth={2}
 								d='M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z'
 							/>
+							{isShareDisplay && (
+								<path
+									strokeLinecap='round'
+									strokeLinejoin='round'
+									strokeWidth={2}
+									d='M6 6l12 12'
+								/>
+							)}
 						</svg>
 					</button>
 
 					{/* Chat */}
-					<button className='bg-gray-700 hover:bg-gray-600 p-4 rounded-full transition-colors relative'>
+					{/* <button className='bg-gray-700 hover:bg-gray-600 p-4 rounded-full transition-colors relative'>
 						<svg
 							className='w-6 h-6 text-white'
 							fill='none'
@@ -593,7 +650,7 @@ export default function RoomPage() {
 						<span className='absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center'>
 							3
 						</span>
-					</button>
+					</button> */}
 
 					<div className='w-px h-10 bg-gray-700 mx-2'></div>
 
