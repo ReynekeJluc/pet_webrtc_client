@@ -24,7 +24,7 @@ export default function RoomPage() {
 	const [isJoined, setIsJoined] = useState(false);
 
 	const [isMicrophone, setIsMicrophone] = useState(true);
-	const [isCamera, setIsCamera] = useState(false);
+	const [isCamera, setIsCamera] = useState(true);
 	const [isShareDisplay, setIsShareDisplay] = useState(false);
 
 	const [showToast, setShowToast] = useState(false);
@@ -381,6 +381,172 @@ export default function RoomPage() {
 		}
 	};
 
+	const switchMicrophone = () => {
+		if (
+			localVideo &&
+			localVideo.getAudioTracks()[0] &&
+			localVideo.getAudioTracks()[0].readyState === 'live'
+		) {
+			const audio = localVideo.getAudioTracks()[0];
+			audio.enabled = !audio.enabled;
+			setIsMicrophone(audio.enabled);
+		} else {
+			requestAudio();
+		}
+	};
+
+	const switchCamera = () => {
+		if (
+			localVideo &&
+			localVideo.getVideoTracks()[0] &&
+			localVideo.getVideoTracks()[0].readyState === 'live'
+		) {
+			const video = localVideo.getVideoTracks()[0];
+			video.enabled = !video.enabled;
+			setIsCamera(video.enabled);
+		} else {
+			requestVideo();
+		}
+	};
+
+	// const requestMedia = () => {
+	// 	navigator.mediaDevices
+	// 		.getUserMedia({ video: true, audio: true })
+	// 		.then(mediaStream => {
+	// 			const newAudio = mediaStream.getAudioTracks()[0];
+	// 			const newVideo = mediaStream.getVideoTracks()[0];
+
+	// 			if (localVideo) {
+	// 				const oldAudio = localVideo.getAudioTracks()[0];
+	// 				const oldVideo = localVideo.getVideoTracks()[0];
+
+	// 				if (oldAudio) {
+	// 					localVideo.removeTrack(oldAudio);
+	// 					oldAudio.stop();
+	// 				}
+	// 				if (oldVideo) {
+	// 					localVideo.removeTrack(oldVideo);
+	// 					oldVideo.stop();
+	// 				}
+
+	// 				localVideo.addTrack(newAudio);
+	// 				localVideo.addTrack(newVideo);
+	// 			}
+
+	// 			peers.forEach(peer => {
+	// 				const senders = peer.connection.getSenders();
+	// 				const audioSender = senders.find(
+	// 					(s: RTCRtpSender) => s.track?.kind === 'audio',
+	// 				);
+	// 				const videoSender = senders.find(
+	// 					(s: RTCRtpSender) => s.track?.kind === 'video',
+	// 				);
+	// 				if (audioSender) {
+	// 					audioSender.replaceTrack(newAudio);
+	// 				}
+	// 				if (videoSender) {
+	// 					videoSender.replaceTrack(newVideo);
+	// 				}
+	// 			});
+
+	// 			// setIsMicrophone(true);
+	// 			// setIsCamera(true);
+	// 		})
+	// 		.catch(e => {
+	// 			console.error('Failed to get media:', e);
+	// 			alert('Не удалось получить доступ к микрофону и камере');
+
+	// 			requestAudio();
+	// 		});
+	// };
+
+	const requestVideo = () => {
+		navigator.mediaDevices
+			.getUserMedia({ video: true })
+			.then(videoStream => {
+				const newVideo = videoStream.getVideoTracks()[0];
+
+				if (localVideo) {
+					const oldVideo = localVideo.getVideoTracks()[0];
+					if (oldVideo) {
+						localVideo.removeTrack(oldVideo);
+						oldVideo.stop();
+					}
+					localVideo.addTrack(newVideo);
+
+					if (videoRef.current) {
+						videoRef.current.srcObject = localVideo;
+					}
+				} else {
+					const newStream = new MediaStream([newVideo]);
+					setLocalVideo(newStream);
+
+					if (videoRef.current) {
+						videoRef.current.srcObject = newStream;
+					}
+				}
+
+				peers.forEach(peer => {
+					const senders = peer.connection.getSenders();
+					const videoSender = senders.find(
+						(s: RTCRtpSender) => s.track?.kind === 'video',
+					);
+					if (videoSender) {
+						videoSender.replaceTrack(newVideo);
+					}
+				});
+
+				setIsCamera(true);
+			})
+			.catch(e => {
+				console.error('Failed to get video:', e);
+				alert('Не удалось получить доступ к камере');
+			});
+	};
+
+	const requestAudio = () => {
+		navigator.mediaDevices
+			.getUserMedia({ audio: true })
+			.then(audioStream => {
+				const newAudio = audioStream.getAudioTracks()[0];
+				if (localVideo) {
+					const oldAudio = localVideo.getAudioTracks()[0];
+					if (oldAudio) {
+						localVideo.removeTrack(oldAudio);
+						oldAudio.stop();
+					}
+					localVideo.addTrack(newAudio);
+
+					if (videoRef.current) {
+						videoRef.current.srcObject = localVideo;
+					}
+				} else {
+					const newStream = new MediaStream([newAudio]);
+					setLocalVideo(newStream);
+
+					if (videoRef.current) {
+						videoRef.current.srcObject = newStream;
+					}
+				}
+
+				peers.forEach(peer => {
+					const senders = peer.connection.getSenders();
+					const audioSender = senders.find(
+						(s: RTCRtpSender) => s.track?.kind === 'audio',
+					);
+					if (audioSender) {
+						audioSender.replaceTrack(newAudio);
+					}
+				});
+
+				setIsMicrophone(true);
+			})
+			.catch(e => {
+				console.error('Failed to get media:', e);
+				alert('Не удалось получить доступ к микрофону');
+			});
+	};
+
 	return (
 		<div className='h-screen bg-gray-900 flex flex-col'>
 			{/* Toast уведомление */}
@@ -550,8 +716,8 @@ export default function RoomPage() {
 				<div className='flex items-center justify-center gap-4'>
 					{/* Microphone */}
 					<button
-						onClick={() => setIsMicrophone(!isMicrophone)}
-						className={`${isMicrophone ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-600 hover:bg-red-700'} p-4 rounded-full transition-colors`}
+						onClick={() => switchMicrophone()}
+						className={`${isMicrophone ? 'bg-green-700 hover:bg-green-600' : 'bg-red-600 hover:bg-red-700'} p-4 rounded-full transition-colors`}
 					>
 						<svg
 							className='w-6 h-6 text-white'
@@ -578,8 +744,8 @@ export default function RoomPage() {
 
 					{/* Camera */}
 					<button
-						onClick={() => setIsCamera(!isCamera)}
-						className={`${isCamera ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-600 hover:bg-red-700'} p-4 rounded-full transition-colors`}
+						onClick={() => switchCamera()}
+						className={`${isCamera ? 'bg-green-700 hover:bg-green-600' : 'bg-red-600 hover:bg-red-700'} p-4 rounded-full transition-colors`}
 					>
 						<svg
 							className='w-6 h-6 text-white'
