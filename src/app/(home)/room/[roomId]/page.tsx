@@ -35,7 +35,7 @@ export default function RoomPage() {
 	useEffect(() => {
 		if (!socket) return;
 
-		const handlePeerJoined = (data: { socketId: string }) => {
+		const handlePeerJoined = (data: { nickname: string; socketId: string }) => {
 			console.log('Новый участник:', data.socketId);
 
 			const pc = new RTCPeerConnection({
@@ -84,19 +84,27 @@ export default function RoomPage() {
 
 			setPeers(prevPeers => {
 				const newPeer = new Map(prevPeers);
-				newPeer.set(data.socketId, { connection: pc, stream: null });
+				newPeer.set(data.socketId, {
+					nickname: data.nickname,
+					connection: pc,
+					stream: null,
+				});
 				return newPeer;
 			});
 		};
 
-		const handleExistingParticipants = (data: { participantIds: string[] }) => {
+		const handleExistingParticipants = (data: {
+			participants: Array<{ socketId: string; nickname: string }>;
+		}) => {
 			if (!socket) return;
-			console.log('Уже в комнате:', data.participantIds);
+			console.log('Уже в комнате:', data.participants);
 
 			setPeers(prevPeers => {
 				const newPeers = new Map(prevPeers);
 
-				data.participantIds.forEach(socketId => {
+				data.participants.forEach(participant => {
+					const { socketId, nickname } = participant;
+
 					const pc = new RTCPeerConnection({
 						iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 					});
@@ -141,7 +149,11 @@ export default function RoomPage() {
 							console.error('Ошибка отправки SDP', e);
 						});
 
-					newPeers.set(socketId, { connection: pc, stream: null });
+					newPeers.set(socketId, {
+						nickname: nickname,
+						connection: pc,
+						stream: null,
+					});
 				});
 
 				return newPeers;
@@ -238,28 +250,26 @@ export default function RoomPage() {
 	useEffect(() => {
 		if (!socket) return;
 
-		const handleIceReceived = (data: {
-			fromSocketId: string;
-			candidate: RTCIceCandidateInit;
-		}) => {
-			console.log('Получен ICE от:', data.fromSocketId);
+		const handlePeerDisconnect = (socketId: string) => {
+			console.log('Участник вышел:', socketId);
 
 			setPeers(prevPeers => {
-				const peer = prevPeers.get(data.fromSocketId);
-				if (peer) {
-					peer.connection.addIceCandidate(data.candidate).catch((e: Error) => {
-						console.error('Ошибка ICE: ', e);
-					});
-				}
+				const newPeers = new Map(prevPeers);
 
-				return prevPeers;
+				const peer = newPeers.get(socketId);
+				if (peer) {
+					peer.connection.close();
+				}
+				newPeers.delete(socketId);
+
+				return newPeers;
 			});
 		};
 
-		socket.on('ice-received', handleIceReceived);
+		socket.on('peer-disconnected', handlePeerDisconnect);
 
 		return () => {
-			socket.off('ice-received', handleIceReceived);
+			socket.off('peer-disconnected', handlePeerDisconnect);
 		};
 	}, [socket]);
 
@@ -308,6 +318,41 @@ export default function RoomPage() {
 			}
 		};
 	}, [isJoined]);
+
+	useEffect(() => {
+		if (!socket) return;
+		const handleIceReceived = (data: {
+			fromSocketId: string;
+			candidate: RTCIceCandidateInit;
+		}) => {
+			console.log('Получен ICE от:', data.fromSocketId);
+
+			setPeers(prevPeers => {
+				const peer = prevPeers.get(data.fromSocketId);
+				if (peer) {
+					peer.connection.addIceCandidate(data.candidate).catch((e: Error) => {
+						console.error('Ошибка ICE: ', e);
+					});
+				}
+
+				return prevPeers;
+			});
+		};
+
+		socket.on('ice-received', handleIceReceived);
+
+		return () => {
+			socket.off('ice-received', handleIceReceived);
+		};
+	}, [socket]);
+
+	//
+	// Локальные функции
+	//
+
+	const MAX_PARTICIPANTS = 4;
+	const totalParticipants = peers.size + 1;
+	const emptySlots = MAX_PARTICIPANTS - totalParticipants;
 
 	const copyRoomLink = () => {
 		const link = `${window.location.origin}/room/${params.roomId}`;
@@ -371,7 +416,7 @@ export default function RoomPage() {
 					<div className='flex items-center gap-3'>
 						<span className='text-sm text-gray-400'>
 							<span className='inline-block w-2 h-2 bg-green-500 rounded-full mr-2'></span>
-							3 участника
+							{totalParticipants} участник(-а, -ов)
 						</span>
 						<button
 							className='text-gray-400 hover:text-white transition-colors'
@@ -407,7 +452,7 @@ export default function RoomPage() {
 							muted
 						/>
 						<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
-							<span className='text-white text-sm font-medium'>Вы</span>
+							<span className='text-white text-sm font-medium'>{nickname}</span>
 						</div>
 						<div className='absolute top-3 right-3 flex gap-2'>
 							<div className='bg-red-500 p-2 rounded-full'>
@@ -428,41 +473,51 @@ export default function RoomPage() {
 						</div>
 					</div>
 
-					{/* Remote Video 1 */}
-					<div className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'>
-						<video className='w-full h-full object-cover' autoPlay />
-						<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
-							<span className='text-white text-sm font-medium'>Участник 1</span>
+					{Array.from(peers).map(([socketId, peer]) => (
+						<div
+							key={socketId}
+							className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'
+						>
+							<video
+								ref={ref => {
+									if (ref && peer.stream) {
+										ref.srcObject = peer.stream;
+									}
+								}}
+								className='w-full h-full object-cover'
+								autoPlay
+							/>
+							<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
+								<span className='text-white text-sm font-medium'>
+									{peer.nickname}
+								</span>
+							</div>
 						</div>
-					</div>
+					))}
 
-					{/* Remote Video 2 */}
-					<div className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'>
-						<video className='w-full h-full object-cover' autoPlay />
-						<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
-							<span className='text-white text-sm font-medium'>Участник 2</span>
+					{Array.from({ length: emptySlots }).map((_, index) => (
+						<div
+							key={index}
+							className='relative bg-gray-800/50 rounded-lg border-2 border-dashed border-gray-700 flex items-center justify-center'
+						>
+							<div className='text-center'>
+								<svg
+									className='w-12 h-12 text-gray-600 mx-auto mb-2'
+									fill='none'
+									stroke='currentColor'
+									viewBox='0 0 24 24'
+								>
+									<path
+										strokeLinecap='round'
+										strokeLinejoin='round'
+										strokeWidth={2}
+										d='M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z'
+									/>
+								</svg>
+								<p className='text-gray-500 text-sm'>Ожидание участника</p>
+							</div>
 						</div>
-					</div>
-
-					{/* Empty Slot */}
-					<div className='relative bg-gray-800/50 rounded-lg border-2 border-dashed border-gray-700 flex items-center justify-center'>
-						<div className='text-center'>
-							<svg
-								className='w-12 h-12 text-gray-600 mx-auto mb-2'
-								fill='none'
-								stroke='currentColor'
-								viewBox='0 0 24 24'
-							>
-								<path
-									strokeLinecap='round'
-									strokeLinejoin='round'
-									strokeWidth={2}
-									d='M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z'
-								/>
-							</svg>
-							<p className='text-gray-500 text-sm'>Ожидание участника</p>
-						</div>
-					</div>
+					))}
 				</div>
 			</div>
 
