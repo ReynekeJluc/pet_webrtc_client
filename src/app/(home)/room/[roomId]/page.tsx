@@ -1,11 +1,19 @@
 'use client';
 
 import { useSocket } from '@/context/SocketContext';
-import { notFound, useParams, useRouter } from 'next/navigation';
+import {
+	notFound,
+	useParams,
+	useRouter,
+	useSearchParams,
+} from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 export default function RoomPage() {
+	const searchParams = useSearchParams();
 	const params = useParams();
+
+	const nickname = searchParams.get('nickname') || 'Анонимус';
 	const roomId = Array.isArray(params.roomId)
 		? params.roomId[0]
 		: params.roomId;
@@ -147,7 +155,10 @@ export default function RoomPage() {
 			if (res.success) {
 				socket?.emit(
 					'join-room',
-					{ roomId: roomId },
+					{
+						roomId: roomId,
+						nickname: nickname,
+					},
 					(response: { success: boolean; error?: string }) => {
 						if (!response.success) {
 							alert('Не удалось войти в комнату'); //! Сделай всплывашку вместо этого колхоза
@@ -169,7 +180,7 @@ export default function RoomPage() {
 			socket.off('peer-joined', handlePeerJoined);
 			socket.off('existing-participants', handleExistingParticipants);
 		};
-	}, [socket, roomId, router, localVideo]);
+	}, [socket, roomId, nickname, router, localVideo]);
 
 	useEffect(() => {
 		console.log('Peers обновились:', peers);
