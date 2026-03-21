@@ -1,6 +1,7 @@
 'use client';
 
 import { useSocket } from '@/context/SocketContext';
+import type { PeerType } from '@/types/PeerType';
 import {
 	notFound,
 	useParams,
@@ -13,7 +14,7 @@ export default function RoomPage() {
 	const searchParams = useSearchParams();
 	const params = useParams();
 
-	const nickname = searchParams.get('nickname') || 'Анонимус';
+	const nickname = searchParams.get('nickname') || 'Anonymous';
 	const roomId = Array.isArray(params.roomId)
 		? params.roomId[0]
 		: params.roomId;
@@ -26,18 +27,14 @@ export default function RoomPage() {
 	const [isShareDisplay, setIsShareDisplay] = useState(false);
 
 	const [showToast, setShowToast] = useState(false);
-	const [localStream, setlocalStream] = useState<MediaStream | null>(null);
-	const [peers, setPeers] = useState(
-		new Map<
-			string,
-			{
-				nickname: string;
-				connection: RTCPeerConnection;
-				stream: MediaStream | null;
-			}
-		>(),
-	); // вынести в тип
+	const [peersState, setPeersState] = useState(new Map<string, PeerType>());
 
+	const initializationRef = useRef<boolean>(false); // для dev режима, от strict mode
+	const iceCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(
+		new Map(),
+	);
+	const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+	const localStreamRef = useRef<MediaStream | null>(null);
 	const videoRef = useRef<HTMLVideoElement>(null);
 
 	const socket = useSocket();
@@ -74,10 +71,25 @@ export default function RoomPage() {
 		pc.oniceconnectionstatechange = () => {
 			console.log('iceConnectionState', data.socketId, pc.iceConnectionState);
 		};
+
+		pc.onicegatheringstatechange = () => {
+			console.log(
+				'icegatheringstatechange',
+				data.socketId,
+				pc.iceGatheringState,
+			);
+		};
 		//
 
 		pc.onicecandidate = event => {
+			console.log('ice candidate has arrived');
+
 			if (event.candidate !== null) {
+				console.log(`fromSocketId = ${socket.id}`);
+				console.log(`toSocketId = ${data.socketId}`);
+				console.log(`ice candidate = ${event.candidate.candidate}`);
+				console.log(`ice candidate sdpmid = ${event.candidate.sdpMid}`);
+
 				socket.emit('relay-ice', {
 					targetSocketId: data.socketId,
 					candidate: event.candidate,
@@ -86,12 +98,23 @@ export default function RoomPage() {
 		};
 
 		pc.ontrack = event => {
-			setPeers(prevPeers => {
+			console.log(`fromSocketId = ${data.socketId}`);
+			console.log(`event.track.kind = ${event.track.kind}`);
+			console.log(`event.streams.length = ${event.streams.length}`);
+			console.log(
+				`event.streams[0].getAudioTracks().length = ${event.streams[0]?.getAudioTracks().length}`,
+			);
+			console.log(
+				`event.streams[0].getVideoTracks().length = ${event.streams[0]?.getVideoTracks().length}`,
+			);
+
+			setPeersState(prevPeers => {
 				const peer = prevPeers.get(data.socketId);
-				if (peer) {
-					peer.stream = event.streams[0];
-				}
-				return new Map(prevPeers);
+				if (!peer) return prevPeers;
+
+				const newPeers = new Map(prevPeers);
+				newPeers.set(data.socketId, { ...peer, stream: event.streams[0] });
+				return newPeers;
 			});
 		};
 
@@ -112,32 +135,38 @@ export default function RoomPage() {
 	) => {
 		if (!socket) return;
 
-		const pc = createPeerConnection(data, stream);
-		if (pc) {
-			setPeers(prevPeers => {
-				const newPeer = new Map(prevPeers);
-				newPeer.set(data.socketId, {
-					nickname: data.nickname,
-					connection: pc,
-					stream: null,
-				});
-				return newPeer;
-			});
-
-			pc.createOffer()
-				.then((offer: RTCSessionDescriptionInit) => {
-					pc.setLocalDescription(offer);
-
-					socket.emit('relay-sdp', {
-						targetSocketId: data.socketId,
-						sdp: offer,
+		if (!peerConnectionsRef.current.has(data.socketId)) {
+			console.log('create peer connection from exist to joined');
+			const pc = createPeerConnection(data, stream);
+			if (pc) {
+				peerConnectionsRef.current.set(data.socketId, pc);
+				setPeersState(prevPeers => {
+					const newPeer = new Map(prevPeers);
+					newPeer.set(data.socketId, {
+						nickname: data.nickname,
+						stream: null,
 					});
-
-					console.log('Создан offer для:', data.socketId);
-				})
-				.catch(e => {
-					console.error('Ошибка отправки SDP', e);
+					return newPeer;
 				});
+
+				pc.createOffer()
+					.then(async (offer: RTCSessionDescriptionInit) => {
+						await pc.setLocalDescription(offer);
+						console.log('setLocalDescription(offer) worked out');
+
+						socket.emit('relay-sdp', {
+							targetSocketId: data.socketId,
+							sdp: offer,
+						});
+
+						console.log('Создан offer для:', data.socketId);
+					})
+					.catch(e => {
+						console.error('Ошибка отправки SDP', e);
+					});
+			}
+		} else {
+			console.warn('peer connection is already there');
 		}
 	};
 
@@ -154,19 +183,28 @@ export default function RoomPage() {
 		if (!socket) return;
 		console.log('Уже в комнате:', data.participants);
 
-		setPeers(prevPeers => {
+		data.participants.forEach(participant => {
+			const { socketId, nickname } = participant;
+
+			if (!peerConnectionsRef.current.has(socketId)) {
+				console.log('create peer connection from joined to exist');
+				const pc = createPeerConnection({ nickname, socketId }, stream);
+
+				if (pc) {
+					peerConnectionsRef.current.set(socketId, pc);
+				}
+			} else {
+				console.warn('peer connection is already there');
+			}
+		});
+
+		setPeersState(prevPeers => {
 			const newPeers = new Map(prevPeers);
 
 			data.participants.forEach(participant => {
 				const { socketId, nickname } = participant;
-
-				const pc = createPeerConnection({ nickname, socketId }, stream);
-				if (pc) {
-					newPeers.set(socketId, {
-						nickname: nickname,
-						connection: pc,
-						stream: null,
-					});
+				if (peerConnectionsRef.current.has(socketId)) {
+					newPeers.set(socketId, { nickname, stream: null });
 				}
 			});
 
@@ -182,36 +220,40 @@ export default function RoomPage() {
 		if (!socket) return;
 		console.log('Получен SDP от:', data.fromSocketId);
 
-		setPeers(prevPeers => {
-			const newPeers = new Map(prevPeers);
-			const peer = newPeers.get(data.fromSocketId);
+		const pc = peerConnectionsRef.current.get(data.fromSocketId);
+		if (!pc) {
+			console.error('Peer не найден id = ', data.fromSocketId);
+			return;
+		}
 
-			if (peer) {
-				peer.connection
-					.setRemoteDescription(data.sdp)
-					.then(() => {
-						if (data.sdp.type === 'offer') {
-							return peer.connection.createAnswer();
-						}
-					})
-					.then((answer?: RTCSessionDescriptionInit) => {
-						if (answer) {
-							peer.connection.setLocalDescription(answer);
+		pc.setRemoteDescription(data.sdp)
+			.then(() => {
+				if (data.sdp.type === 'offer') {
+					return pc.createAnswer();
+				}
+			})
+			.then(async (answer?: RTCSessionDescriptionInit) => {
+				if (answer) {
+					await pc.setLocalDescription(answer);
+					console.log('setLocalDescription(answer) worked out');
 
-							socket.emit('relay-sdp', {
-								targetSocketId: data.fromSocketId,
-								sdp: answer,
-							});
-						}
-					})
-					.catch((e: Error) => {
-						console.error('Ошибка обработки SDP:', e);
+					socket.emit('relay-sdp', {
+						targetSocketId: data.fromSocketId,
+						sdp: answer,
 					});
-			} else {
-				console.error('Peer не найден id = ', data.fromSocketId);
-			}
-			return newPeers;
-		});
+				}
+
+				const candidates = iceCandidatesRef.current.get(data.fromSocketId);
+				candidates?.forEach(c => {
+					pc.addIceCandidate(c).catch((e: Error) => {
+						console.error('Ошибка ICE: ', e);
+					});
+				});
+				iceCandidatesRef.current.delete(data.fromSocketId);
+			})
+			.catch((e: Error) => {
+				console.error('Ошибка обработки SDP:', e);
+			});
 	};
 
 	// Получение ICE candidate
@@ -222,36 +264,39 @@ export default function RoomPage() {
 		if (!socket) return;
 
 		console.log('Получен ICE от:', data.fromSocketId);
+		console.log('Кандидат ICE:', data.candidate);
 
-		setPeers(prevPeers => {
-			const peer = prevPeers.get(data.fromSocketId);
-			if (peer) {
-				peer.connection.addIceCandidate(data.candidate).catch((e: Error) => {
-					console.error('Ошибка ICE: ', e);
-				});
-			} else {
-				console.error('Peer не найден id = ', data.fromSocketId);
-			}
+		const pc = peerConnectionsRef.current.get(data.fromSocketId);
+		if (!pc) {
+			console.warn('Peer не найден id = ', data.fromSocketId);
+			return;
+		}
 
-			return prevPeers;
-		});
+		if (pc.remoteDescription) {
+			pc.addIceCandidate(data.candidate).catch((e: Error) => {
+				console.error('Ошибка ICE: ', e);
+			});
+		} else {
+			const existing = iceCandidatesRef.current.get(data.fromSocketId) ?? [];
+			iceCandidatesRef.current.set(data.fromSocketId, [
+				...existing,
+				data.candidate,
+			]);
+		}
 	};
 
 	// Обработка выхода участника
 	const handlePeerDisconnect = (socketId: string) => {
-		if (!socket) return;
 		console.log('Участник вышел:', socketId);
 
-		setPeers(prevPeers => {
-			const newPeers = new Map(prevPeers);
+		const pc = peerConnectionsRef.current.get(socketId);
+		pc?.close();
 
-			const peer = newPeers.get(socketId);
-			if (peer) {
-				peer.connection.close();
-			}
-			newPeers.delete(socketId);
-
-			return newPeers;
+		peerConnectionsRef.current.delete(socketId);
+		setPeersState(prev => {
+			const newMap = new Map(prev);
+			newMap.delete(socketId);
+			return newMap;
 		});
 	};
 
@@ -274,7 +319,7 @@ export default function RoomPage() {
 		);
 	};
 
-	const checkRoom = async () => {
+	const checkRoom = async (): Promise<boolean> => {
 		return new Promise(resolve => {
 			socket?.emit('check-room', { roomId }, (res: { success: boolean }) => {
 				if (res.success) {
@@ -295,7 +340,7 @@ export default function RoomPage() {
 		if (isJoin) {
 			// разрешения
 			const stream = await requestPermissions();
-			setlocalStream(stream);
+			localStreamRef.current = stream;
 
 			if (videoRef.current) {
 				videoRef.current.srcObject = stream;
@@ -306,13 +351,60 @@ export default function RoomPage() {
 		return null;
 	};
 
+	const cleanupRoomResources = () => {
+		const localVideo = videoRef.current;
+		const peerConnections = peerConnectionsRef.current;
+
+		iceCandidatesRef.current.clear();
+		peerConnections.forEach(peer => {
+			peer.close();
+		});
+		peerConnections.clear();
+		// setPeersState(new Map());
+
+		if (localStreamRef.current) {
+			localStreamRef.current.getTracks().forEach(track => {
+				track.stop();
+			});
+		}
+		localStreamRef.current = null;
+		if (localVideo) {
+			localVideo.srcObject = null;
+		}
+	};
+
 	useEffect(() => {
 		if (!socket) return;
 
-		const localVideo = videoRef.current;
-		let stream: MediaStream | null = null;
+		const start = async () => {
+			try {
+				console.log('startRoomSession called');
+				const stream = await startRoomSession();
+
+				if (stream) {
+					console.log('joinRoom called');
+					joinRoom();
+				}
+			} catch (e) {
+				console.log(e);
+			}
+		};
+		if (!initializationRef.current) {
+			initializationRef.current = true;
+			start();
+		}
+
+		return () => {
+			console.log('cleanup!');
+			cleanupRoomResources();
+		};
+	}, [socket, roomId, nickname]);
+
+	useEffect(() => {
+		if (!socket) return;
 
 		const onPeerJoined = (data: { socketId: string; nickname: string }) => {
+			const stream = localStreamRef.current;
 			if (stream) {
 				handlePeerJoined(data, stream);
 			}
@@ -324,54 +416,49 @@ export default function RoomPage() {
 				nickname: string;
 			}>;
 		}) => {
+			const stream = localStreamRef.current;
 			if (stream) {
 				handleExistingParticipants(data, stream);
 			}
 		};
 
-		const start = async () => {
-			stream = await startRoomSession();
-
-			if (stream) {
-				// подписки
-				socket.on('peer-joined', onPeerJoined);
-				socket.on('existing-participants', onExistingParticipants);
-				socket.on('sdp-received', handleSdpReceived);
-				socket.on('ice-received', handleIceReceived);
-				socket.on('peer-disconnected', handlePeerDisconnect);
-
-				joinRoom();
-			}
+		const onHandleSdpReceived = (data: {
+			fromSocketId: string;
+			sdp: RTCSessionDescriptionInit;
+		}) => {
+			handleSdpReceived(data);
 		};
-		start();
+
+		const onHandleIceReceived = (data: {
+			fromSocketId: string;
+			candidate: RTCIceCandidateInit;
+		}) => {
+			handleIceReceived(data);
+		};
+
+		const onHandlePeerDisconnect = (socketId: string) => {
+			handlePeerDisconnect(socketId);
+		};
+
+		socket.on('peer-joined', onPeerJoined);
+		socket.on('existing-participants', onExistingParticipants);
+		socket.on('sdp-received', onHandleSdpReceived);
+		socket.on('ice-received', onHandleIceReceived);
+		socket.on('peer-disconnected', onHandlePeerDisconnect);
 
 		return () => {
 			socket.off('peer-joined', onPeerJoined);
 			socket.off('existing-participants', onExistingParticipants);
-			socket.off('sdp-received', handleSdpReceived);
-			socket.off('ice-received', handleIceReceived);
-			socket.off('peer-disconnected', handlePeerDisconnect);
-
-			peers.forEach(peer => {
-				peer.connection.close();
-				peer.stream = null;
-			});
-
-			if (localStream) {
-				localStream.getTracks().forEach(track => {
-					track.stop();
-				});
-				if (localVideo) {
-					localVideo.srcObject = null;
-				}
-			}
+			socket.off('sdp-received', onHandleSdpReceived);
+			socket.off('ice-received', onHandleIceReceived);
+			socket.off('peer-disconnected', onHandlePeerDisconnect);
 		};
-	}, [socket, roomId, nickname, peers, localStream]);
+	}, [socket]);
 
 	// Логи пиров
 	useEffect(() => {
-		console.log('Peers обновились:', peers);
-	}, [peers]);
+		console.log('Peers обновились:', peersState);
+	}, [peersState]);
 
 	//
 	// Локальные функции
@@ -379,7 +466,7 @@ export default function RoomPage() {
 
 	// Константы
 	const MAX_PARTICIPANTS = 4;
-	const totalParticipants = peers.size + 1;
+	const totalParticipants = peersState.size + 1;
 	const emptySlots = MAX_PARTICIPANTS - totalParticipants;
 
 	// обработчик клика на кнопку копирования ссылки румы
@@ -400,11 +487,6 @@ export default function RoomPage() {
 
 	// обработчик клика на кнопку выхода
 	const leaveRoom = () => {
-		if (localStream) {
-			localStream.getTracks().forEach(track => track.stop());
-			setlocalStream(null);
-		}
-
 		socket?.emit(
 			'leave-room',
 			(response: { success: boolean; error?: string }) => {
@@ -415,6 +497,8 @@ export default function RoomPage() {
 				}
 			},
 		);
+
+		cleanupRoomResources();
 	};
 
 	// обработчик клика на имя румы (убрать на проде)
@@ -429,11 +513,11 @@ export default function RoomPage() {
 	// toggle микрофона
 	const switchMicrophone = () => {
 		if (
-			localStream &&
-			localStream.getAudioTracks()[0] &&
-			localStream.getAudioTracks()[0].readyState === 'live'
+			localStreamRef.current &&
+			localStreamRef.current.getAudioTracks()[0] &&
+			localStreamRef.current.getAudioTracks()[0].readyState === 'live'
 		) {
-			const audio = localStream.getAudioTracks()[0];
+			const audio = localStreamRef.current.getAudioTracks()[0];
 			audio.enabled = !audio.enabled;
 			setIsMicrophone(audio.enabled);
 		} else {
@@ -444,11 +528,11 @@ export default function RoomPage() {
 	// toggle камеры
 	const switchCamera = () => {
 		if (
-			localStream &&
-			localStream.getVideoTracks()[0] &&
-			localStream.getVideoTracks()[0].readyState === 'live'
+			localStreamRef.current &&
+			localStreamRef.current.getVideoTracks()[0] &&
+			localStreamRef.current.getVideoTracks()[0].readyState === 'live'
 		) {
-			const video = localStream.getVideoTracks()[0];
+			const video = localStreamRef.current.getVideoTracks()[0];
 			video.enabled = !video.enabled;
 			setIsCamera(video.enabled);
 		} else {
@@ -512,28 +596,28 @@ export default function RoomPage() {
 			.then(videoStream => {
 				const newVideo = videoStream.getVideoTracks()[0];
 
-				if (localStream) {
-					const oldVideo = localStream.getVideoTracks()[0];
+				if (localStreamRef.current) {
+					const oldVideo = localStreamRef.current.getVideoTracks()[0];
 					if (oldVideo) {
-						localStream.removeTrack(oldVideo);
+						localStreamRef.current.removeTrack(oldVideo);
 						oldVideo.stop();
 					}
-					localStream.addTrack(newVideo);
+					localStreamRef.current.addTrack(newVideo);
 
 					if (videoRef.current) {
-						videoRef.current.srcObject = localStream;
+						videoRef.current.srcObject = localStreamRef.current;
 					}
 				} else {
 					const newStream = new MediaStream([newVideo]);
-					setlocalStream(newStream);
+					localStreamRef.current = newStream;
 
 					if (videoRef.current) {
-						videoRef.current.srcObject = newStream;
+						videoRef.current.srcObject = localStreamRef.current;
 					}
 				}
 
-				peers.forEach(peer => {
-					const senders = peer.connection.getSenders();
+				peerConnectionsRef.current.forEach(peer => {
+					const senders = peer.getSenders();
 					const videoSender = senders.find(
 						(s: RTCRtpSender) => s.track?.kind === 'video',
 					);
@@ -556,28 +640,28 @@ export default function RoomPage() {
 			.getUserMedia({ audio: true })
 			.then(audioStream => {
 				const newAudio = audioStream.getAudioTracks()[0];
-				if (localStream) {
-					const oldAudio = localStream.getAudioTracks()[0];
+				if (localStreamRef.current) {
+					const oldAudio = localStreamRef.current.getAudioTracks()[0];
 					if (oldAudio) {
-						localStream.removeTrack(oldAudio);
+						localStreamRef.current.removeTrack(oldAudio);
 						oldAudio.stop();
 					}
-					localStream.addTrack(newAudio);
+					localStreamRef.current.addTrack(newAudio);
 
 					if (videoRef.current) {
-						videoRef.current.srcObject = localStream;
+						videoRef.current.srcObject = localStreamRef.current;
 					}
 				} else {
 					const newStream = new MediaStream([newAudio]);
-					setlocalStream(newStream);
+					localStreamRef.current = newStream;
 
 					if (videoRef.current) {
 						videoRef.current.srcObject = newStream;
 					}
 				}
 
-				peers.forEach(peer => {
-					const senders = peer.connection.getSenders();
+				peerConnectionsRef.current.forEach(peer => {
+					const senders = peer.getSenders();
 					const audioSender = senders.find(
 						(s: RTCRtpSender) => s.track?.kind === 'audio',
 					);
@@ -710,7 +794,7 @@ export default function RoomPage() {
 						)}
 					</div>
 
-					{Array.from(peers).map(([socketId, peer]) => (
+					{Array.from(peersState).map(([socketId, peer]) => (
 						<div
 							key={socketId}
 							className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'
@@ -720,6 +804,24 @@ export default function RoomPage() {
 									if (ref && peer.stream) {
 										ref.srcObject = peer.stream;
 									}
+									console.log(`state before play`);
+									console.log(`state stream muted ${ref?.muted}`);
+									console.log(`state stream paused ${ref?.paused}`);
+									console.log(`state stream readyState ${ref?.readyState}`);
+									console.log(`state stream volume ${ref?.volume}`);
+
+									console.log(`trying start manually`);
+									if (ref?.play) {
+										ref.play();
+									} else {
+										console.error('error play video');
+									}
+
+									console.log(`state after play`);
+									console.log(`state stream muted ${ref?.muted}`);
+									console.log(`state stream paused ${ref?.paused}`);
+									console.log(`state stream readyState ${ref?.readyState}`);
+									console.log(`state stream volume ${ref?.volume}`);
 								}}
 								className='w-full h-full object-cover'
 								playsInline
