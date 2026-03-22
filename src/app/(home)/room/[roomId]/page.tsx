@@ -9,6 +9,7 @@ import {
 	useSearchParams,
 } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import RemotePeerCard from './remotePeerCard';
 
 export default function RoomPage() {
 	const searchParams = useSearchParams();
@@ -360,7 +361,7 @@ export default function RoomPage() {
 			peer.close();
 		});
 		peerConnections.clear();
-		// setPeersState(new Map());
+		setPeersState(new Map());
 
 		if (localStreamRef.current) {
 			localStreamRef.current.getTracks().forEach(track => {
@@ -795,44 +796,7 @@ export default function RoomPage() {
 					</div>
 
 					{Array.from(peersState).map(([socketId, peer]) => (
-						<div
-							key={socketId}
-							className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'
-						>
-							<video
-								ref={ref => {
-									if (ref && peer.stream) {
-										ref.srcObject = peer.stream;
-									}
-									console.log(`state before play`);
-									console.log(`state stream muted ${ref?.muted}`);
-									console.log(`state stream paused ${ref?.paused}`);
-									console.log(`state stream readyState ${ref?.readyState}`);
-									console.log(`state stream volume ${ref?.volume}`);
-
-									console.log(`trying start manually`);
-									if (ref?.play) {
-										ref.play();
-									} else {
-										console.error('error play video');
-									}
-
-									console.log(`state after play`);
-									console.log(`state stream muted ${ref?.muted}`);
-									console.log(`state stream paused ${ref?.paused}`);
-									console.log(`state stream readyState ${ref?.readyState}`);
-									console.log(`state stream volume ${ref?.volume}`);
-								}}
-								className='w-full h-full object-cover'
-								playsInline
-								autoPlay
-							/>
-							<div className='absolute bottom-3 left-3 bg-black/60 px-3 py-1 rounded-full'>
-								<span className='text-white text-sm font-medium'>
-									{peer.nickname}
-								</span>
-							</div>
-						</div>
+						<RemotePeerCard key={socketId} peer={peer}></RemotePeerCard>
 					))}
 
 					{Array.from({ length: emptySlots }).map((_, index) => (
