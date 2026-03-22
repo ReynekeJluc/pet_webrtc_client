@@ -34,6 +34,9 @@ export default function RoomPage() {
 	const iceCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(
 		new Map(),
 	);
+	const sdpOffersRef = useRef<Map<string, RTCSessionDescriptionInit[]>>(
+		new Map(),
+	);
 	const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 	const localStreamRef = useRef<MediaStream | null>(null);
 	const videoRef = useRef<HTMLVideoElement>(null);
@@ -86,10 +89,10 @@ export default function RoomPage() {
 			console.log('ice candidate has arrived');
 
 			if (event.candidate !== null) {
-				console.log(`fromSocketId = ${socket.id}`);
-				console.log(`toSocketId = ${data.socketId}`);
-				console.log(`ice candidate = ${event.candidate.candidate}`);
-				console.log(`ice candidate sdpmid = ${event.candidate.sdpMid}`);
+				// console.log(`fromSocketId = ${socket.id}`);
+				// console.log(`toSocketId = ${data.socketId}`);
+				// console.log(`ice candidate = ${event.candidate.candidate}`);
+				// console.log(`ice candidate sdpmid = ${event.candidate.sdpMid}`);
 
 				socket.emit('relay-ice', {
 					targetSocketId: data.socketId,
@@ -99,15 +102,15 @@ export default function RoomPage() {
 		};
 
 		pc.ontrack = event => {
-			console.log(`fromSocketId = ${data.socketId}`);
-			console.log(`event.track.kind = ${event.track.kind}`);
-			console.log(`event.streams.length = ${event.streams.length}`);
-			console.log(
-				`event.streams[0].getAudioTracks().length = ${event.streams[0]?.getAudioTracks().length}`,
-			);
-			console.log(
-				`event.streams[0].getVideoTracks().length = ${event.streams[0]?.getVideoTracks().length}`,
-			);
+			// console.log(`fromSocketId = ${data.socketId}`);
+			// console.log(`event.track.kind = ${event.track.kind}`);
+			// console.log(`event.streams.length = ${event.streams.length}`);
+			// console.log(
+			// 	`event.streams[0].getAudioTracks().length = ${event.streams[0]?.getAudioTracks().length}`,
+			// );
+			// console.log(
+			// 	`event.streams[0].getVideoTracks().length = ${event.streams[0]?.getVideoTracks().length}`,
+			// );
 
 			setPeersState(prevPeers => {
 				const peer = prevPeers.get(data.socketId);
@@ -137,9 +140,32 @@ export default function RoomPage() {
 		if (!socket) return;
 
 		if (!peerConnectionsRef.current.has(data.socketId)) {
-			console.log('create peer connection from exist to joined');
 			const pc = createPeerConnection(data, stream);
 			if (pc) {
+				const offers = sdpOffersRef.current.get(data.socketId);
+				offers?.forEach(offer => {
+					pc.setRemoteDescription(offer)
+						.then(() => {
+							if (offer.type === 'offer') {
+								return pc.createAnswer();
+							}
+						})
+						.then(async (answer?: RTCSessionDescriptionInit) => {
+							if (answer) {
+								await pc.setLocalDescription(answer);
+
+								socket.emit('relay-sdp', {
+									targetSocketId: data.socketId,
+									sdp: answer,
+								});
+							}
+						})
+						.catch((e: Error) => {
+							console.error('Ошибка обработки SDP:', e);
+						});
+				});
+				sdpOffersRef.current.delete(data.socketId);
+
 				peerConnectionsRef.current.set(data.socketId, pc);
 				setPeersState(prevPeers => {
 					const newPeer = new Map(prevPeers);
@@ -153,7 +179,6 @@ export default function RoomPage() {
 				pc.createOffer()
 					.then(async (offer: RTCSessionDescriptionInit) => {
 						await pc.setLocalDescription(offer);
-						console.log('setLocalDescription(offer) worked out');
 
 						socket.emit('relay-sdp', {
 							targetSocketId: data.socketId,
@@ -188,10 +213,32 @@ export default function RoomPage() {
 			const { socketId, nickname } = participant;
 
 			if (!peerConnectionsRef.current.has(socketId)) {
-				console.log('create peer connection from joined to exist');
 				const pc = createPeerConnection({ nickname, socketId }, stream);
-
 				if (pc) {
+					const offers = sdpOffersRef.current.get(socketId);
+					offers?.forEach(offer => {
+						pc.setRemoteDescription(offer)
+							.then(() => {
+								if (offer.type === 'offer') {
+									return pc.createAnswer();
+								}
+							})
+							.then(async (answer?: RTCSessionDescriptionInit) => {
+								if (answer) {
+									await pc.setLocalDescription(answer);
+
+									socket.emit('relay-sdp', {
+										targetSocketId: socketId,
+										sdp: answer,
+									});
+								}
+							})
+							.catch((e: Error) => {
+								console.error('Ошибка обработки SDP:', e);
+							});
+					});
+					sdpOffersRef.current.delete(socketId);
+
 					peerConnectionsRef.current.set(socketId, pc);
 				}
 			} else {
@@ -224,6 +271,10 @@ export default function RoomPage() {
 		const pc = peerConnectionsRef.current.get(data.fromSocketId);
 		if (!pc) {
 			console.error('Peer не найден id = ', data.fromSocketId);
+
+			const existing = sdpOffersRef.current.get(data.fromSocketId) ?? [];
+			sdpOffersRef.current.set(data.fromSocketId, [...existing, data.sdp]);
+
 			return;
 		}
 
@@ -236,7 +287,6 @@ export default function RoomPage() {
 			.then(async (answer?: RTCSessionDescriptionInit) => {
 				if (answer) {
 					await pc.setLocalDescription(answer);
-					console.log('setLocalDescription(answer) worked out');
 
 					socket.emit('relay-sdp', {
 						targetSocketId: data.fromSocketId,
@@ -265,7 +315,7 @@ export default function RoomPage() {
 		if (!socket) return;
 
 		console.log('Получен ICE от:', data.fromSocketId);
-		console.log('Кандидат ICE:', data.candidate);
+		// console.log('Кандидат ICE:', data.candidate);
 
 		const pc = peerConnectionsRef.current.get(data.fromSocketId);
 		if (!pc) {
@@ -357,6 +407,7 @@ export default function RoomPage() {
 		const peerConnections = peerConnectionsRef.current;
 
 		iceCandidatesRef.current.clear();
+		sdpOffersRef.current.clear();
 		peerConnections.forEach(peer => {
 			peer.close();
 		});
