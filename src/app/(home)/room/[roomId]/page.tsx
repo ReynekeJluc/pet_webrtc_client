@@ -130,7 +130,7 @@ export default function RoomPage() {
 	};
 
 	// Логика уже подключенных
-	const handlePeerJoined = (
+	const handlePeerJoined = async (
 		data: {
 			socketId: string;
 			nickname: string;
@@ -138,35 +138,42 @@ export default function RoomPage() {
 		stream: MediaStream,
 	) => {
 		if (!socket) return;
+		let isOffered = false;
 
 		if (!peerConnectionsRef.current.has(data.socketId)) {
 			const pc = createPeerConnection(data, stream);
 			if (pc) {
-				const offers = sdpOffersRef.current.get(data.socketId);
-				offers?.forEach(offer => {
-					pc.setRemoteDescription(offer)
-						.then(() => {
-							if (offer.type === 'offer') {
-								return pc.createAnswer();
-							}
-						})
-						.then(async (answer?: RTCSessionDescriptionInit) => {
-							if (answer) {
-								await pc.setLocalDescription(answer);
-
-								socket.emit('relay-sdp', {
-									targetSocketId: data.socketId,
-									sdp: answer,
-								});
-							}
-						})
-						.catch((e: Error) => {
-							console.error('Ошибка обработки SDP:', e);
-						});
-				});
-				sdpOffersRef.current.delete(data.socketId);
-
 				peerConnectionsRef.current.set(data.socketId, pc);
+
+				const offers = sdpOffersRef.current.get(data.socketId);
+				if (offers) {
+					for (const offer of offers) {
+						if (offer.type === 'offer') {
+							isOffered = true;
+						}
+						await pc.setRemoteDescription(offer);
+						if (offer.type === 'offer') {
+							const answer = await pc.createAnswer();
+							await pc.setLocalDescription(answer);
+
+							socket.emit('relay-sdp', {
+								targetSocketId: data.socketId,
+								sdp: answer,
+							});
+						}
+					}
+				}
+
+				const candidates = iceCandidatesRef.current.get(data.socketId);
+				if (candidates) {
+					for (const candidate of candidates) {
+						await pc.addIceCandidate(candidate);
+					}
+				}
+
+				sdpOffersRef.current.delete(data.socketId);
+				iceCandidatesRef.current.delete(data.socketId);
+
 				setPeersState(prevPeers => {
 					const newPeer = new Map(prevPeers);
 					newPeer.set(data.socketId, {
@@ -176,8 +183,9 @@ export default function RoomPage() {
 					return newPeer;
 				});
 
-				pc.createOffer()
-					.then(async (offer: RTCSessionDescriptionInit) => {
+				if (!isOffered) {
+					try {
+						const offer = await pc.createOffer();
 						await pc.setLocalDescription(offer);
 
 						socket.emit('relay-sdp', {
@@ -186,10 +194,10 @@ export default function RoomPage() {
 						});
 
 						console.log('Создан offer для:', data.socketId);
-					})
-					.catch(e => {
+					} catch (e) {
 						console.error('Ошибка отправки SDP', e);
-					});
+					}
+				}
 			}
 		} else {
 			console.warn('peer connection is already there');
@@ -197,7 +205,7 @@ export default function RoomPage() {
 	};
 
 	// Логика подключающихся
-	const handleExistingParticipants = (
+	const handleExistingParticipants = async (
 		data: {
 			participants: Array<{
 				socketId: string;
@@ -209,42 +217,45 @@ export default function RoomPage() {
 		if (!socket) return;
 		console.log('Уже в комнате:', data.participants);
 
-		data.participants.forEach(participant => {
+		for (const participant of data.participants) {
 			const { socketId, nickname } = participant;
 
 			if (!peerConnectionsRef.current.has(socketId)) {
 				const pc = createPeerConnection({ nickname, socketId }, stream);
 				if (pc) {
-					const offers = sdpOffersRef.current.get(socketId);
-					offers?.forEach(offer => {
-						pc.setRemoteDescription(offer)
-							.then(() => {
-								if (offer.type === 'offer') {
-									return pc.createAnswer();
-								}
-							})
-							.then(async (answer?: RTCSessionDescriptionInit) => {
-								if (answer) {
-									await pc.setLocalDescription(answer);
-
-									socket.emit('relay-sdp', {
-										targetSocketId: socketId,
-										sdp: answer,
-									});
-								}
-							})
-							.catch((e: Error) => {
-								console.error('Ошибка обработки SDP:', e);
-							});
-					});
-					sdpOffersRef.current.delete(socketId);
-
 					peerConnectionsRef.current.set(socketId, pc);
+
+					const offers = sdpOffersRef.current.get(socketId);
+					if (offers) {
+						for (const offer of offers) {
+							await pc.setRemoteDescription(offer);
+
+							if (offer.type === 'offer') {
+								const answer = await pc.createAnswer();
+								await pc.setLocalDescription(answer);
+
+								socket.emit('relay-sdp', {
+									targetSocketId: socketId,
+									sdp: answer,
+								});
+							}
+						}
+					}
+
+					const candidates = iceCandidatesRef.current.get(socketId);
+					if (candidates) {
+						for (const candidate of candidates) {
+							await pc.addIceCandidate(candidate);
+						}
+					}
+
+					sdpOffersRef.current.delete(socketId);
+					iceCandidatesRef.current.delete(socketId);
 				}
 			} else {
 				console.warn('peer connection is already there');
 			}
-		});
+		}
 
 		setPeersState(prevPeers => {
 			const newPeers = new Map(prevPeers);
@@ -295,11 +306,14 @@ export default function RoomPage() {
 				}
 
 				const candidates = iceCandidatesRef.current.get(data.fromSocketId);
-				candidates?.forEach(c => {
-					pc.addIceCandidate(c).catch((e: Error) => {
-						console.error('Ошибка ICE: ', e);
-					});
-				});
+				if (candidates) {
+					for (const candidate of candidates) {
+						await pc.addIceCandidate(candidate).catch((e: Error) => {
+							console.error('Ошибка ICE: ', e);
+						});
+					}
+				}
+
 				iceCandidatesRef.current.delete(data.fromSocketId);
 			})
 			.catch((e: Error) => {
@@ -308,7 +322,7 @@ export default function RoomPage() {
 	};
 
 	// Получение ICE candidate
-	const handleIceReceived = (data: {
+	const handleIceReceived = async (data: {
 		fromSocketId: string;
 		candidate: RTCIceCandidateInit;
 	}) => {
@@ -319,12 +333,19 @@ export default function RoomPage() {
 
 		const pc = peerConnectionsRef.current.get(data.fromSocketId);
 		if (!pc) {
-			console.warn('Peer не найден id = ', data.fromSocketId);
+			// console.warn('Peer не найден id = ', data.fromSocketId);
+
+			const existing = iceCandidatesRef.current.get(data.fromSocketId) ?? [];
+			iceCandidatesRef.current.set(data.fromSocketId, [
+				...existing,
+				data.candidate,
+			]);
+
 			return;
 		}
 
 		if (pc.remoteDescription) {
-			pc.addIceCandidate(data.candidate).catch((e: Error) => {
+			await pc.addIceCandidate(data.candidate).catch((e: Error) => {
 				console.error('Ошибка ICE: ', e);
 			});
 		} else {

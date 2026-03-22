@@ -10,35 +10,23 @@ export default function RemotePeerCard(props: Props) {
 
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 
-	const connectStream = (element: HTMLVideoElement, stream: MediaStream) => {
-		element.srcObject = stream;
-		element
-			.play()
-			.then(() => {
-				console.error('success play video');
-			})
-			.catch(e => {
-				console.error('error play video', e);
-			});
-	};
-
 	useEffect(() => {
-		if (videoRef.current && stream) {
-			connectStream(videoRef.current, stream);
+		const video = videoRef.current;
+		if (!video || !stream) return;
+
+		if (video.srcObject !== stream) {
+			video.srcObject = stream;
 		}
+
+		void video.play().catch(e => {
+			console.error('error play video', e);
+		});
 	}, [stream]);
 
 	return (
 		<div className='relative bg-gray-800 rounded-lg overflow-hidden shadow-lg'>
 			<video
-				ref={el => {
-					if (el) {
-						videoRef.current = el;
-					}
-					if (el && stream) {
-						connectStream(el, stream);
-					}
-				}}
+				ref={videoRef}
 				className='w-full h-full object-cover'
 				playsInline
 				autoPlay
