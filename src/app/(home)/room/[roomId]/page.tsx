@@ -50,10 +50,17 @@ export default function RoomPage() {
 			throw new Error('getUserMedia is unavailable');
 		}
 
-		return await navigator.mediaDevices.getUserMedia({
+		const stream = await navigator.mediaDevices.getUserMedia({
 			video: true,
 			audio: true,
 		});
+
+		console.log('local media ready', {
+			audioTracks: stream.getAudioTracks().length,
+			videoTracks: stream.getVideoTracks().length,
+		});
+
+		return stream;
 	};
 
 	// создаем пир подключение
@@ -65,6 +72,12 @@ export default function RoomPage() {
 		stream: MediaStream,
 	) => {
 		if (!socket) return;
+		console.log('creating peer connection', {
+			socketId: data.socketId,
+			nickname: data.nickname,
+			localAudioTracks: stream.getAudioTracks().length,
+			localVideoTracks: stream.getVideoTracks().length,
+		});
 		const pc = new RTCPeerConnection({
 			iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 		});
@@ -104,15 +117,13 @@ export default function RoomPage() {
 		};
 
 		pc.ontrack = event => {
-			// console.log(`fromSocketId = ${data.socketId}`);
-			// console.log(`event.track.kind = ${event.track.kind}`);
-			// console.log(`event.streams.length = ${event.streams.length}`);
-			// console.log(
-			// 	`event.streams[0].getAudioTracks().length = ${event.streams[0]?.getAudioTracks().length}`,
-			// );
-			// console.log(
-			// 	`event.streams[0].getVideoTracks().length = ${event.streams[0]?.getVideoTracks().length}`,
-			// );
+			console.log('received remote track', {
+				socketId: data.socketId,
+				trackKind: event.track.kind,
+				streamsLength: event.streams.length,
+				audioTracks: event.streams[0]?.getAudioTracks().length ?? 0,
+				videoTracks: event.streams[0]?.getVideoTracks().length ?? 0,
+			});
 
 			setPeersState(prevPeers => {
 				const peer = prevPeers.get(data.socketId);
@@ -128,14 +139,32 @@ export default function RoomPage() {
 		const videoTrack = stream.getVideoTracks()[0];
 
 		if (audioTrack) {
+			console.log('adding local audio track', {
+				socketId: data.socketId,
+				trackId: audioTrack.id,
+				enabled: audioTrack.enabled,
+				readyState: audioTrack.readyState,
+			});
 			pc.addTrack(audioTrack, stream);
 		} else {
+			console.log('creating audio transceiver', {
+				socketId: data.socketId,
+			});
 			pc.addTransceiver('audio', { direction: 'sendrecv' });
 		}
 
 		if (videoTrack) {
+			console.log('adding local video track', {
+				socketId: data.socketId,
+				trackId: videoTrack.id,
+				enabled: videoTrack.enabled,
+				readyState: videoTrack.readyState,
+			});
 			pc.addTrack(videoTrack, stream);
 		} else {
+			console.log('creating video transceiver', {
+				socketId: data.socketId,
+			});
 			pc.addTransceiver('video', { direction: 'sendrecv' });
 		}
 
@@ -152,6 +181,10 @@ export default function RoomPage() {
 	) => {
 		if (!socket) return;
 		let isOffered = false;
+		console.log('handling peer joined', {
+			socketId: data.socketId,
+			nickname: data.nickname,
+		});
 
 		if (!peerConnectionsRef.current.has(data.socketId)) {
 			const pc = createPeerConnection(data, stream);
@@ -160,10 +193,18 @@ export default function RoomPage() {
 
 				const offers = sdpOffersRef.current.get(data.socketId);
 				if (offers) {
+					console.log('flushing buffered sdp', {
+						socketId: data.socketId,
+						count: offers.length,
+					});
 					for (const offer of offers) {
 						if (offer.type === 'offer') {
 							isOffered = true;
 						}
+						console.log('applying buffered sdp', {
+							socketId: data.socketId,
+							type: offer.type,
+						});
 						await pc.setRemoteDescription(offer);
 						if (offer.type === 'offer') {
 							const answer = await pc.createAnswer();
@@ -179,6 +220,10 @@ export default function RoomPage() {
 
 				const candidates = iceCandidatesRef.current.get(data.socketId);
 				if (candidates) {
+					console.log('flushing buffered ice', {
+						socketId: data.socketId,
+						count: candidates.length,
+					});
 					for (const candidate of candidates) {
 						await pc.addIceCandidate(candidate);
 					}
@@ -229,18 +274,33 @@ export default function RoomPage() {
 	) => {
 		if (!socket) return;
 		console.log('Уже в комнате:', data.participants);
+		console.log('handling existing participants', {
+			count: data.participants.length,
+		});
 
 		for (const participant of data.participants) {
 			const { socketId, nickname } = participant;
 
 			if (!peerConnectionsRef.current.has(socketId)) {
+				console.log('creating peer for existing participant', {
+					socketId,
+					nickname,
+				});
 				const pc = createPeerConnection({ nickname, socketId }, stream);
 				if (pc) {
 					peerConnectionsRef.current.set(socketId, pc);
 
 					const offers = sdpOffersRef.current.get(socketId);
 					if (offers) {
+						console.log('flushing buffered sdp', {
+							socketId,
+							count: offers.length,
+						});
 						for (const offer of offers) {
+							console.log('applying buffered sdp', {
+								socketId,
+								type: offer.type,
+							});
 							await pc.setRemoteDescription(offer);
 
 							if (offer.type === 'offer') {
@@ -257,6 +317,10 @@ export default function RoomPage() {
 
 					const candidates = iceCandidatesRef.current.get(socketId);
 					if (candidates) {
+						console.log('flushing buffered ice', {
+							socketId,
+							count: candidates.length,
+						});
 						for (const candidate of candidates) {
 							await pc.addIceCandidate(candidate);
 						}
@@ -291,6 +355,10 @@ export default function RoomPage() {
 	}) => {
 		if (!socket) return;
 		console.log('Получен SDP от:', data.fromSocketId);
+		console.log('received sdp', {
+			socketId: data.fromSocketId,
+			type: data.sdp.type,
+		});
 
 		const pc = peerConnectionsRef.current.get(data.fromSocketId);
 		if (!pc) {
@@ -298,12 +366,22 @@ export default function RoomPage() {
 
 			const existing = sdpOffersRef.current.get(data.fromSocketId) ?? [];
 			sdpOffersRef.current.set(data.fromSocketId, [...existing, data.sdp]);
+			console.log('buffering sdp', {
+				socketId: data.fromSocketId,
+				type: data.sdp.type,
+				bufferedCount: existing.length + 1,
+			});
 
 			return;
 		}
 
 		pc.setRemoteDescription(data.sdp)
 			.then(() => {
+				console.log('remote description set', {
+					socketId: data.fromSocketId,
+					type: data.sdp.type,
+					signalingState: pc.signalingState,
+				});
 				if (data.sdp.type === 'offer') {
 					return pc.createAnswer();
 				}
@@ -311,6 +389,10 @@ export default function RoomPage() {
 			.then(async (answer?: RTCSessionDescriptionInit) => {
 				if (answer) {
 					await pc.setLocalDescription(answer);
+					console.log('answer created', {
+						socketId: data.fromSocketId,
+						type: answer.type,
+					});
 
 					socket.emit('relay-sdp', {
 						targetSocketId: data.fromSocketId,
@@ -320,6 +402,10 @@ export default function RoomPage() {
 
 				const candidates = iceCandidatesRef.current.get(data.fromSocketId);
 				if (candidates) {
+					console.log('flushing buffered ice after sdp', {
+						socketId: data.fromSocketId,
+						count: candidates.length,
+					});
 					for (const candidate of candidates) {
 						await pc.addIceCandidate(candidate).catch((e: Error) => {
 							console.error('Ошибка ICE: ', e);
@@ -343,6 +429,11 @@ export default function RoomPage() {
 
 		console.log('Получен ICE от:', data.fromSocketId);
 		// console.log('Кандидат ICE:', data.candidate);
+		console.log('received ice', {
+			socketId: data.fromSocketId,
+			hasRemoteDescription: !!peerConnectionsRef.current.get(data.fromSocketId)
+				?.remoteDescription,
+		});
 
 		const pc = peerConnectionsRef.current.get(data.fromSocketId);
 		if (!pc) {
@@ -353,6 +444,10 @@ export default function RoomPage() {
 				...existing,
 				data.candidate,
 			]);
+			console.log('buffering ice without peer', {
+				socketId: data.fromSocketId,
+				bufferedCount: existing.length + 1,
+			});
 
 			return;
 		}
@@ -361,12 +456,21 @@ export default function RoomPage() {
 			await pc.addIceCandidate(data.candidate).catch((e: Error) => {
 				console.error('Ошибка ICE: ', e);
 			});
+			console.log('applied ice candidate', {
+				socketId: data.fromSocketId,
+				signalingState: pc.signalingState,
+				iceConnectionState: pc.iceConnectionState,
+			});
 		} else {
 			const existing = iceCandidatesRef.current.get(data.fromSocketId) ?? [];
 			iceCandidatesRef.current.set(data.fromSocketId, [
 				...existing,
 				data.candidate,
 			]);
+			console.log('buffering ice before remote description', {
+				socketId: data.fromSocketId,
+				bufferedCount: existing.length + 1,
+			});
 		}
 	};
 
@@ -386,6 +490,10 @@ export default function RoomPage() {
 	};
 
 	const joinRoom = () => {
+		console.log('joining room', {
+			roomId,
+			nickname,
+		});
 		socket?.emit(
 			'join-room',
 			{
@@ -399,6 +507,10 @@ export default function RoomPage() {
 					router.push('/');
 				} else {
 					console.log('Успешный вход');
+					console.log('joined room', {
+						roomId,
+						nickname,
+					});
 				}
 			},
 		);
@@ -700,6 +812,10 @@ export default function RoomPage() {
 			.getUserMedia({ video: true })
 			.then(videoStream => {
 				const newVideo = videoStream.getVideoTracks()[0];
+				console.log('video permission granted', {
+					trackId: newVideo.id,
+					readyState: newVideo.readyState,
+				});
 
 				if (localStreamRef.current) {
 					const oldVideo = localStreamRef.current.getVideoTracks()[0];
@@ -727,8 +843,14 @@ export default function RoomPage() {
 						(s: RTCRtpSender) => s.track?.kind === 'video',
 					);
 					if (videoSender) {
+						console.log('replacing video track', {
+							trackId: newVideo.id,
+						});
 						videoSender.replaceTrack(newVideo);
 					} else if (localStreamRef.current) {
+						console.log('adding video track after join', {
+							trackId: newVideo.id,
+						});
 						peer.addTrack(newVideo, localStreamRef.current);
 					}
 				});
@@ -747,6 +869,10 @@ export default function RoomPage() {
 			.getUserMedia({ audio: true })
 			.then(audioStream => {
 				const newAudio = audioStream.getAudioTracks()[0];
+				console.log('audio permission granted', {
+					trackId: newAudio.id,
+					readyState: newAudio.readyState,
+				});
 				if (localStreamRef.current) {
 					const oldAudio = localStreamRef.current.getAudioTracks()[0];
 					if (oldAudio) {
@@ -773,8 +899,14 @@ export default function RoomPage() {
 						(s: RTCRtpSender) => s.track?.kind === 'audio',
 					);
 					if (audioSender) {
+						console.log('replacing audio track', {
+							trackId: newAudio.id,
+						});
 						audioSender.replaceTrack(newAudio);
 					} else if (localStreamRef.current) {
+						console.log('adding audio track after join', {
+							trackId: newAudio.id,
+						});
 						peer.addTrack(newAudio, localStreamRef.current);
 					}
 				});
