@@ -46,12 +46,14 @@ export default function RoomPage() {
 
 	// запрашиваем разрешения
 	const requestPermissions = async () => {
-		const mediaStream = await navigator.mediaDevices.getUserMedia({
+		if (!navigator.mediaDevices?.getUserMedia) {
+			throw new Error('getUserMedia is unavailable');
+		}
+
+		return await navigator.mediaDevices.getUserMedia({
 			video: true,
 			audio: true,
 		});
-
-		return mediaStream;
 	};
 
 	// создаем пир подключение
@@ -122,9 +124,20 @@ export default function RoomPage() {
 			});
 		};
 
-		stream.getTracks().forEach(track => {
-			pc.addTrack(track, stream);
-		});
+		const audioTrack = stream.getAudioTracks()[0];
+		const videoTrack = stream.getVideoTracks()[0];
+
+		if (audioTrack) {
+			pc.addTrack(audioTrack, stream);
+		} else {
+			pc.addTransceiver('audio', { direction: 'sendrecv' });
+		}
+
+		if (videoTrack) {
+			pc.addTrack(videoTrack, stream);
+		} else {
+			pc.addTransceiver('video', { direction: 'sendrecv' });
+		}
 
 		return pc;
 	};
@@ -392,13 +405,11 @@ export default function RoomPage() {
 	};
 
 	const checkRoom = async (): Promise<boolean> => {
+		console.log('checkRoom start', roomId);
 		return new Promise(resolve => {
 			socket?.emit('check-room', { roomId }, (res: { success: boolean }) => {
-				if (res.success) {
-					resolve(true);
-				} else {
-					resolve(false);
-				}
+				console.log('checkRoom result', res);
+				resolve(res.success);
 			});
 		});
 	};
@@ -409,17 +420,38 @@ export default function RoomPage() {
 
 		// проверка комнаты
 		const isJoin = await checkRoom();
+		console.log('after checkRoom', isJoin);
 		if (isJoin) {
-			// разрешения
-			const stream = await requestPermissions();
-			localStreamRef.current = stream;
+			try {
+				const stream = await requestPermissions();
+				console.log('after requestPermissions', stream);
+				localStreamRef.current = stream;
 
-			if (videoRef.current) {
-				videoRef.current.srcObject = stream;
+				if (videoRef.current) {
+					videoRef.current.srcObject = stream;
+				}
+
+				setIsMicrophone(!!stream.getAudioTracks()[0]);
+				setIsCamera(!!stream.getVideoTracks()[0]);
+
+				return stream;
+			} catch (e) {
+				console.warn('join without local media', e);
+
+				const emptyStream = new MediaStream();
+				localStreamRef.current = emptyStream;
+
+				if (videoRef.current) {
+					videoRef.current.srcObject = emptyStream;
+				}
+
+				setIsMicrophone(false);
+				setIsCamera(false);
+
+				return emptyStream;
 			}
-
-			return stream;
 		}
+
 		return null;
 	};
 
@@ -459,7 +491,7 @@ export default function RoomPage() {
 					joinRoom();
 				}
 			} catch (e) {
-				console.log(e);
+				console.log('start room failed', e);
 			}
 		};
 		if (!initializationRef.current) {
@@ -696,6 +728,8 @@ export default function RoomPage() {
 					);
 					if (videoSender) {
 						videoSender.replaceTrack(newVideo);
+					} else if (localStreamRef.current) {
+						peer.addTrack(newVideo, localStreamRef.current);
 					}
 				});
 
@@ -740,6 +774,8 @@ export default function RoomPage() {
 					);
 					if (audioSender) {
 						audioSender.replaceTrack(newAudio);
+					} else if (localStreamRef.current) {
+						peer.addTrack(newAudio, localStreamRef.current);
 					}
 				});
 
