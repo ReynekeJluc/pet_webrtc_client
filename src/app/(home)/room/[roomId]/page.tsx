@@ -11,6 +11,12 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import RemotePeerCard from './remotePeerCard';
 
+type PeerConnectionEntry = {
+	pc: RTCPeerConnection;
+	audioSender: RTCRtpSender;
+	videoSender: RTCRtpSender;
+};
+
 export default function RoomPage() {
 	const searchParams = useSearchParams();
 	const params = useParams();
@@ -37,41 +43,130 @@ export default function RoomPage() {
 	const sdpOffersRef = useRef<Map<string, RTCSessionDescriptionInit[]>>(
 		new Map(),
 	);
-	const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+	const peerConnectionsRef = useRef<Map<string, PeerConnectionEntry>>(
+		new Map(),
+	);
+	const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
 	const localStreamRef = useRef<MediaStream | null>(null);
 	const videoRef = useRef<HTMLVideoElement>(null);
 
-	const socket = useSocket();
-	const router = useRouter();
+		const socket = useSocket();
+		const router = useRouter();
+
+		const syncLocalPreview = (stream: MediaStream | null) => {
+			if (videoRef.current) {
+				videoRef.current.srcObject = stream;
+			}
+		};
+
+		const ensurePeerState = (
+			socketId: string,
+			peerNickname: string,
+			stream: MediaStream | null = null,
+		) => {
+			setPeersState(prevPeers => {
+				const nextPeers = new Map(prevPeers);
+				const existingPeer = nextPeers.get(socketId);
+
+				nextPeers.set(socketId, {
+					nickname: peerNickname,
+					stream: stream ?? existingPeer?.stream ?? null,
+				});
+
+				return nextPeers;
+			});
+		};
 
 	// запрашиваем разрешения
-	const requestPermissions = async () => {
-		if (!navigator.mediaDevices?.getUserMedia) {
-			throw new Error('getUserMedia is unavailable');
-		}
+		const requestPermissions = async () => {
+			if (!navigator.mediaDevices?.getUserMedia) {
+				throw new Error('getUserMedia is unavailable');
+			}
 
-		const stream = await navigator.mediaDevices.getUserMedia({
-			video: true,
-			audio: true,
-		});
+			try {
+				const stream = await navigator.mediaDevices.getUserMedia({
+					video: true,
+					audio: true,
+				});
 
-		console.log('local media ready', {
-			audioTracks: stream.getAudioTracks().length,
-			videoTracks: stream.getVideoTracks().length,
-		});
+				console.log('local media ready', {
+					audioTracks: stream.getAudioTracks().length,
+					videoTracks: stream.getVideoTracks().length,
+				});
 
-		return stream;
-	};
+				return stream;
+			} catch (combinedError) {
+				console.warn(
+					'combined media request failed, trying partial access',
+					combinedError,
+				);
+
+				const fallbackStream = new MediaStream();
+				const [audioResult, videoResult] = await Promise.allSettled([
+					navigator.mediaDevices.getUserMedia({ audio: true }),
+					navigator.mediaDevices.getUserMedia({ video: true }),
+				]);
+
+				if (audioResult.status === 'fulfilled') {
+					audioResult.value.getAudioTracks().forEach(track => {
+						fallbackStream.addTrack(track);
+					});
+				} else {
+					console.warn('audio permission unavailable', audioResult.reason);
+				}
+
+				if (videoResult.status === 'fulfilled') {
+					videoResult.value.getVideoTracks().forEach(track => {
+						fallbackStream.addTrack(track);
+					});
+				} else {
+					console.warn('video permission unavailable', videoResult.reason);
+				}
+
+				console.log('local media fallback ready', {
+					audioTracks: fallbackStream.getAudioTracks().length,
+					videoTracks: fallbackStream.getVideoTracks().length,
+				});
+
+				return fallbackStream;
+			}
+		};
 
 	// создаем пир подключение
-	const createPeerConnection = (
-		data: {
-			nickname: string;
-			socketId: string;
-		},
-		stream: MediaStream,
-	) => {
-		if (!socket) return;
+		const replaceTrackForPeers = async (
+			kind: 'audio' | 'video',
+			track: MediaStreamTrack,
+		) => {
+			for (const [socketId, peerConnection] of peerConnectionsRef.current) {
+				const sender =
+					kind === 'audio'
+						? peerConnection.audioSender
+						: peerConnection.videoSender;
+
+				console.log(`replacing ${kind} track`, {
+					socketId,
+					trackId: track.id,
+				});
+
+				try {
+					await sender.replaceTrack(track);
+				} catch (e) {
+					console.error(`failed to replace ${kind} track`, {
+						socketId,
+						error: e,
+					});
+				}
+			}
+		};
+
+		const createPeerConnection = (
+			data: {
+				nickname: string;
+				socketId: string;
+			},
+			stream: MediaStream,
+		) => {
+			if (!socket) return null;
 		console.log('creating peer connection', {
 			socketId: data.socketId,
 			nickname: data.nickname,
@@ -116,60 +211,75 @@ export default function RoomPage() {
 			}
 		};
 
-		pc.ontrack = event => {
-			console.log('received remote track', {
-				socketId: data.socketId,
-				trackKind: event.track.kind,
-				streamsLength: event.streams.length,
-				audioTracks: event.streams[0]?.getAudioTracks().length ?? 0,
-				videoTracks: event.streams[0]?.getVideoTracks().length ?? 0,
-			});
+			pc.ontrack = event => {
+				console.log('received remote track', {
+					socketId: data.socketId,
+					trackKind: event.track.kind,
+					streamsLength: event.streams.length,
+					audioTracks: event.streams[0]?.getAudioTracks().length ?? 0,
+					videoTracks: event.streams[0]?.getVideoTracks().length ?? 0,
+				});
 
-			setPeersState(prevPeers => {
-				const peer = prevPeers.get(data.socketId);
-				if (!peer) return prevPeers;
+				let remoteStream = remoteStreamsRef.current.get(data.socketId);
+				if (!remoteStream) {
+					remoteStream = event.streams[0] ?? new MediaStream();
+					remoteStreamsRef.current.set(data.socketId, remoteStream);
+				}
 
-				const newPeers = new Map(prevPeers);
-				newPeers.set(data.socketId, { ...peer, stream: event.streams[0] });
-				return newPeers;
-			});
-		};
+				if (!remoteStream.getTracks().some(track => track.id === event.track.id)) {
+					remoteStream.addTrack(event.track);
+				}
+
+				ensurePeerState(data.socketId, data.nickname, remoteStream);
+			};
 
 		const audioTrack = stream.getAudioTracks()[0];
 		const videoTrack = stream.getVideoTracks()[0];
 
-		if (audioTrack) {
-			console.log('adding local audio track', {
-				socketId: data.socketId,
-				trackId: audioTrack.id,
-				enabled: audioTrack.enabled,
-				readyState: audioTrack.readyState,
-			});
-			pc.addTrack(audioTrack, stream);
-		} else {
-			console.log('creating audio transceiver', {
-				socketId: data.socketId,
-			});
-			pc.addTransceiver('audio', { direction: 'sendrecv' });
-		}
+			if (audioTrack) {
+				console.log('adding local audio track', {
+					socketId: data.socketId,
+					trackId: audioTrack.id,
+					enabled: audioTrack.enabled,
+					readyState: audioTrack.readyState,
+				});
+			} else {
+				console.log('creating audio transceiver', {
+					socketId: data.socketId,
+				});
+			}
+			const audioTransceiver = audioTrack
+				? pc.addTransceiver(audioTrack, {
+						direction: 'sendrecv',
+						streams: [stream],
+					})
+				: pc.addTransceiver('audio', { direction: 'sendrecv' });
 
-		if (videoTrack) {
-			console.log('adding local video track', {
-				socketId: data.socketId,
-				trackId: videoTrack.id,
-				enabled: videoTrack.enabled,
-				readyState: videoTrack.readyState,
-			});
-			pc.addTrack(videoTrack, stream);
-		} else {
-			console.log('creating video transceiver', {
-				socketId: data.socketId,
-			});
-			pc.addTransceiver('video', { direction: 'sendrecv' });
-		}
+			if (videoTrack) {
+				console.log('adding local video track', {
+					socketId: data.socketId,
+					trackId: videoTrack.id,
+					enabled: videoTrack.enabled,
+					readyState: videoTrack.readyState,
+				});
+			} else {
+				console.log('creating video transceiver', {
+					socketId: data.socketId,
+				});
+			}
+			const videoTransceiver = videoTrack
+				? pc.addTransceiver(videoTrack, {
+						direction: 'sendrecv',
+						streams: [stream],
+					})
+				: pc.addTransceiver('video', { direction: 'sendrecv' });
 
-		return pc;
-	};
+			return {
+				pc,
+				audioSender: audioTransceiver.sender,
+				videoSender: videoTransceiver.sender,
+			};
+		};
 
 	// Логика уже подключенных
 	const handlePeerJoined = async (
@@ -187,12 +297,14 @@ export default function RoomPage() {
 		});
 
 		if (!peerConnectionsRef.current.has(data.socketId)) {
-			const pc = createPeerConnection(data, stream);
-			if (pc) {
-				peerConnectionsRef.current.set(data.socketId, pc);
+			const peerConnection = createPeerConnection(data, stream);
+			if (peerConnection) {
+				peerConnectionsRef.current.set(data.socketId, peerConnection);
+				ensurePeerState(data.socketId, data.nickname);
+				const pc = peerConnection.pc;
 
-				const offers = sdpOffersRef.current.get(data.socketId);
-				if (offers) {
+					const offers = sdpOffersRef.current.get(data.socketId);
+					if (offers) {
 					console.log('flushing buffered sdp', {
 						socketId: data.socketId,
 						count: offers.length,
@@ -229,20 +341,11 @@ export default function RoomPage() {
 					}
 				}
 
-				sdpOffersRef.current.delete(data.socketId);
-				iceCandidatesRef.current.delete(data.socketId);
+					sdpOffersRef.current.delete(data.socketId);
+					iceCandidatesRef.current.delete(data.socketId);
 
-				setPeersState(prevPeers => {
-					const newPeer = new Map(prevPeers);
-					newPeer.set(data.socketId, {
-						nickname: data.nickname,
-						stream: null,
-					});
-					return newPeer;
-				});
-
-				if (!isOffered) {
-					try {
+					if (!isOffered) {
+						try {
 						const offer = await pc.createOffer();
 						await pc.setLocalDescription(offer);
 
@@ -281,17 +384,22 @@ export default function RoomPage() {
 		for (const participant of data.participants) {
 			const { socketId, nickname } = participant;
 
-			if (!peerConnectionsRef.current.has(socketId)) {
-				console.log('creating peer for existing participant', {
-					socketId,
-					nickname,
-				});
-				const pc = createPeerConnection({ nickname, socketId }, stream);
-				if (pc) {
-					peerConnectionsRef.current.set(socketId, pc);
+				if (!peerConnectionsRef.current.has(socketId)) {
+					console.log('creating peer for existing participant', {
+						socketId,
+						nickname,
+					});
+					const peerConnection = createPeerConnection(
+						{ nickname, socketId },
+						stream,
+					);
+					if (peerConnection) {
+						peerConnectionsRef.current.set(socketId, peerConnection);
+						ensurePeerState(socketId, nickname);
+						const pc = peerConnection.pc;
 
-					const offers = sdpOffersRef.current.get(socketId);
-					if (offers) {
+						const offers = sdpOffersRef.current.get(socketId);
+						if (offers) {
 						console.log('flushing buffered sdp', {
 							socketId,
 							count: offers.length,
@@ -329,24 +437,11 @@ export default function RoomPage() {
 					sdpOffersRef.current.delete(socketId);
 					iceCandidatesRef.current.delete(socketId);
 				}
-			} else {
-				console.warn('peer connection is already there');
-			}
-		}
-
-		setPeersState(prevPeers => {
-			const newPeers = new Map(prevPeers);
-
-			data.participants.forEach(participant => {
-				const { socketId, nickname } = participant;
-				if (peerConnectionsRef.current.has(socketId)) {
-					newPeers.set(socketId, { nickname, stream: null });
+				} else {
+					console.warn('peer connection is already there');
 				}
-			});
-
-			return newPeers;
-		});
-	};
+			}
+		};
 
 	// Обработка получения SDP offer
 	const handleSdpReceived = (data: {
@@ -360,7 +455,7 @@ export default function RoomPage() {
 			type: data.sdp.type,
 		});
 
-		const pc = peerConnectionsRef.current.get(data.fromSocketId);
+			const pc = peerConnectionsRef.current.get(data.fromSocketId)?.pc;
 		if (!pc) {
 			console.error('Peer не найден id = ', data.fromSocketId);
 
@@ -429,13 +524,13 @@ export default function RoomPage() {
 
 		console.log('Получен ICE от:', data.fromSocketId);
 		// console.log('Кандидат ICE:', data.candidate);
-		console.log('received ice', {
-			socketId: data.fromSocketId,
-			hasRemoteDescription: !!peerConnectionsRef.current.get(data.fromSocketId)
-				?.remoteDescription,
-		});
+			console.log('received ice', {
+				socketId: data.fromSocketId,
+				hasRemoteDescription: !!peerConnectionsRef.current.get(data.fromSocketId)
+					?.pc.remoteDescription,
+			});
 
-		const pc = peerConnectionsRef.current.get(data.fromSocketId);
+			const pc = peerConnectionsRef.current.get(data.fromSocketId)?.pc;
 		if (!pc) {
 			// console.warn('Peer не найден id = ', data.fromSocketId);
 
@@ -478,11 +573,14 @@ export default function RoomPage() {
 	const handlePeerDisconnect = (socketId: string) => {
 		console.log('Участник вышел:', socketId);
 
-		const pc = peerConnectionsRef.current.get(socketId);
-		pc?.close();
+			const peerConnection = peerConnectionsRef.current.get(socketId);
+				peerConnection?.pc.close();
 
-		peerConnectionsRef.current.delete(socketId);
-		setPeersState(prev => {
+				peerConnectionsRef.current.delete(socketId);
+				remoteStreamsRef.current.delete(socketId);
+				iceCandidatesRef.current.delete(socketId);
+				sdpOffersRef.current.delete(socketId);
+				setPeersState(prev => {
 			const newMap = new Map(prev);
 			newMap.delete(socketId);
 			return newMap;
@@ -534,28 +632,24 @@ export default function RoomPage() {
 		const isJoin = await checkRoom();
 		console.log('after checkRoom', isJoin);
 		if (isJoin) {
-			try {
-				const stream = await requestPermissions();
-				console.log('after requestPermissions', stream);
-				localStreamRef.current = stream;
+				try {
+					const stream = await requestPermissions();
+					console.log('after requestPermissions', stream);
+					localStreamRef.current = stream;
 
-				if (videoRef.current) {
-					videoRef.current.srcObject = stream;
-				}
+					syncLocalPreview(stream);
 
 				setIsMicrophone(!!stream.getAudioTracks()[0]);
 				setIsCamera(!!stream.getVideoTracks()[0]);
 
 				return stream;
 			} catch (e) {
-				console.warn('join without local media', e);
+					console.warn('join without local media', e);
 
-				const emptyStream = new MediaStream();
-				localStreamRef.current = emptyStream;
+					const emptyStream = new MediaStream();
+					localStreamRef.current = emptyStream;
 
-				if (videoRef.current) {
-					videoRef.current.srcObject = emptyStream;
-				}
+					syncLocalPreview(emptyStream);
 
 				setIsMicrophone(false);
 				setIsCamera(false);
@@ -568,14 +662,15 @@ export default function RoomPage() {
 	};
 
 	const cleanupRoomResources = () => {
-		const localVideo = videoRef.current;
-		const peerConnections = peerConnectionsRef.current;
+			const localVideo = videoRef.current;
+			const peerConnections = peerConnectionsRef.current;
 
-		iceCandidatesRef.current.clear();
-		sdpOffersRef.current.clear();
-		peerConnections.forEach(peer => {
-			peer.close();
-		});
+			iceCandidatesRef.current.clear();
+			sdpOffersRef.current.clear();
+			remoteStreamsRef.current.clear();
+			peerConnections.forEach(peer => {
+				peer.pc.close();
+			});
 		peerConnections.clear();
 		setPeersState(new Map());
 
@@ -807,56 +902,34 @@ export default function RoomPage() {
 	// };
 
 	// Запрос разрешения на видео
-	const requestVideo = () => {
-		navigator.mediaDevices
-			.getUserMedia({ video: true })
-			.then(videoStream => {
-				const newVideo = videoStream.getVideoTracks()[0];
-				console.log('video permission granted', {
-					trackId: newVideo.id,
+		const requestVideo = () => {
+			navigator.mediaDevices
+				.getUserMedia({ video: true })
+				.then(async videoStream => {
+					const newVideo = videoStream.getVideoTracks()[0];
+					console.log('video permission granted', {
+						trackId: newVideo.id,
 					readyState: newVideo.readyState,
 				});
 
 				if (localStreamRef.current) {
 					const oldVideo = localStreamRef.current.getVideoTracks()[0];
-					if (oldVideo) {
-						localStreamRef.current.removeTrack(oldVideo);
-						oldVideo.stop();
+						if (oldVideo) {
+							localStreamRef.current.removeTrack(oldVideo);
+							oldVideo.stop();
+						}
+						localStreamRef.current.addTrack(newVideo);
+						syncLocalPreview(localStreamRef.current);
+					} else {
+						const newStream = new MediaStream([newVideo]);
+						localStreamRef.current = newStream;
+						syncLocalPreview(localStreamRef.current);
 					}
-					localStreamRef.current.addTrack(newVideo);
 
-					if (videoRef.current) {
-						videoRef.current.srcObject = localStreamRef.current;
-					}
-				} else {
-					const newStream = new MediaStream([newVideo]);
-					localStreamRef.current = newStream;
+					await replaceTrackForPeers('video', newVideo);
 
-					if (videoRef.current) {
-						videoRef.current.srcObject = localStreamRef.current;
-					}
-				}
-
-				peerConnectionsRef.current.forEach(peer => {
-					const senders = peer.getSenders();
-					const videoSender = senders.find(
-						(s: RTCRtpSender) => s.track?.kind === 'video',
-					);
-					if (videoSender) {
-						console.log('replacing video track', {
-							trackId: newVideo.id,
-						});
-						videoSender.replaceTrack(newVideo);
-					} else if (localStreamRef.current) {
-						console.log('adding video track after join', {
-							trackId: newVideo.id,
-						});
-						peer.addTrack(newVideo, localStreamRef.current);
-					}
-				});
-
-				setIsCamera(true);
-			})
+					setIsCamera(true);
+				})
 			.catch(e => {
 				console.error('Failed to get video:', e);
 				alert('Не удалось получить доступ к камере');
@@ -864,55 +937,33 @@ export default function RoomPage() {
 	};
 
 	// Запрос разрешения на микрофон
-	const requestAudio = () => {
-		navigator.mediaDevices
-			.getUserMedia({ audio: true })
-			.then(audioStream => {
-				const newAudio = audioStream.getAudioTracks()[0];
-				console.log('audio permission granted', {
-					trackId: newAudio.id,
+		const requestAudio = () => {
+			navigator.mediaDevices
+				.getUserMedia({ audio: true })
+				.then(async audioStream => {
+					const newAudio = audioStream.getAudioTracks()[0];
+					console.log('audio permission granted', {
+						trackId: newAudio.id,
 					readyState: newAudio.readyState,
 				});
 				if (localStreamRef.current) {
 					const oldAudio = localStreamRef.current.getAudioTracks()[0];
-					if (oldAudio) {
-						localStreamRef.current.removeTrack(oldAudio);
-						oldAudio.stop();
+						if (oldAudio) {
+							localStreamRef.current.removeTrack(oldAudio);
+							oldAudio.stop();
+						}
+						localStreamRef.current.addTrack(newAudio);
+						syncLocalPreview(localStreamRef.current);
+					} else {
+						const newStream = new MediaStream([newAudio]);
+						localStreamRef.current = newStream;
+						syncLocalPreview(newStream);
 					}
-					localStreamRef.current.addTrack(newAudio);
 
-					if (videoRef.current) {
-						videoRef.current.srcObject = localStreamRef.current;
-					}
-				} else {
-					const newStream = new MediaStream([newAudio]);
-					localStreamRef.current = newStream;
+					await replaceTrackForPeers('audio', newAudio);
 
-					if (videoRef.current) {
-						videoRef.current.srcObject = newStream;
-					}
-				}
-
-				peerConnectionsRef.current.forEach(peer => {
-					const senders = peer.getSenders();
-					const audioSender = senders.find(
-						(s: RTCRtpSender) => s.track?.kind === 'audio',
-					);
-					if (audioSender) {
-						console.log('replacing audio track', {
-							trackId: newAudio.id,
-						});
-						audioSender.replaceTrack(newAudio);
-					} else if (localStreamRef.current) {
-						console.log('adding audio track after join', {
-							trackId: newAudio.id,
-						});
-						peer.addTrack(newAudio, localStreamRef.current);
-					}
-				});
-
-				setIsMicrophone(true);
-			})
+					setIsMicrophone(true);
+				})
 			.catch(e => {
 				console.error('Failed to get media:', e);
 				alert('Не удалось получить доступ к микрофону');
